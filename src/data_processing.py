@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 import polars as pl
+import yaml
 
 @dataclass
 class CountyDataLoader:
@@ -128,3 +129,43 @@ class CountyDataLoader:
         )
 
         return merged
+
+# Load YAML model config file
+def load_yaml_config(config_path: str | Path) -> dict:
+    """
+    Load a YAML configuration file as a dictionary.
+    """
+    config_path = Path(config_path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"❌ Config file not found: {config_path}")
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+    if not isinstance(config, dict):
+        raise ValueError("❌ Config file must define a dictionary of parameters.")
+    return config
+
+# Convert --model_args into a dict
+def parse_model_args(arg_list):
+    args_dict = {}
+    for arg in arg_list:
+        if "=" not in arg:
+            continue
+        key, val = arg.split("=", 1)
+        # try to cast to int, float, bool, tuple automatically
+        if val.lower() in ["true", "false"]:
+            val = val.lower() == "true"
+        elif val.startswith("(") and val.endswith(")"):
+            try:
+                val = tuple(map(int, val.strip("()").split(",")))
+            except ValueError:
+                val = tuple(map(float, val.strip("()").split(",")))
+        else:
+            try:
+                val = int(val)
+            except ValueError:
+                try:
+                    val = float(val)
+                except ValueError:
+                    pass
+        args_dict[key] = val
+    return args_dict

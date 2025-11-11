@@ -1,10 +1,12 @@
 ### 11/09/25, EB: Runs the risk score modelling pipeline, and produces maps of the risk scores for each predicted year.
 
 from src.model_training import yearly_mortality_prediction_polars
-from src.data_processing import CountyDataLoader
+from src.data_processing import CountyDataLoader, load_yaml_config, parse_model_args
 from src.visualizations import plot_county_metric_maps, plot_yearly_feature_importances
 from src.metrics import compute_all_risk_scores
-from src.models.xgboost import xgb_model
+from src.models.xgboost import get_model as xgb_model
+from src.models.randomforest import get_model as rf_model
+from src.models.mlp import get_model as mlp_model
 import argparse
 
 
@@ -17,7 +19,7 @@ def get_args():
         "--model",
         type=str,
         default="xgboost",
-        choices=["xgboost"],#, "random_forest"],
+        choices=["xgboost", "random_forest", "mlp"],
         help="Which model to use for training."
     )
 
@@ -36,25 +38,57 @@ def get_args():
         help="Optional directory to save plots (if not provided, plots are displayed interactively)."
     )
 
+    parser.add_argument(
+        "--model_args",
+        nargs="*",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Optional model hyperparameters, e.g. --model_args max_depth=10 learning_rate=0.05",
+    )
+    
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Optional path to a YAML config file with model hyperparameters (overrides defaults)."
+    )
+
     return parser.parse_args()
 
 MODEL_REGISTRY = {
-    "xgboost": lambda: xgb_model
-    # "random_forest": lambda: rf_model(),
+    "xgboost": xgb_model,
+    "random_forest": rf_model,
+    "mlp": mlp_model
 }
 
 def main():
+    # Parse command-line arguments
     args = get_args()
 
+    # Load data
     data = CountyDataLoader()
     df = data.load()
 
+    # Load model defaults and overrides
+    model_kwargs = {}
+    
+    # Load from YAML config if provided
+    if args.config:
+        print(f" Loading model config from {args.config}")
+        model_kwargs.update(load_yaml_config(args.config))
+
+    # Parse command line model kwargs if provided
+    if args.model_args:
+        model_kwargs.update(parse_model_args(args.model_args))
+
+    # Check if model template exists
     if args.model not in MODEL_REGISTRY:
         raise ValueError(f"Unknown model: {args.model}. "
                          f"Available: {list(MODEL_REGISTRY.keys())}")
 
-    model = MODEL_REGISTRY[args.model]()  # dynamically pick model
+    model = MODEL_REGISTRY[args.model](**model_kwargs)  # dynamically pick model
 
+    # Run model training and prediction, save results
     metrics, feature_importances, predictions, all_errors, save_dir = (
         yearly_mortality_prediction_polars(df, model, save_path=args.save_dir)
     )
