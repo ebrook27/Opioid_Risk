@@ -45,7 +45,7 @@ def get_args():
         metavar="KEY=VALUE",
         help="Optional model hyperparameters, e.g. --model_args max_depth=10 learning_rate=0.05",
     )
-    
+
     parser.add_argument(
         "--config",
         type=str,
@@ -61,9 +61,24 @@ MODEL_REGISTRY = {
     "mlp": mlp_model
 }
 
+PLOT_DISPATCH = {
+    "risk": plot_county_metric_maps,
+    "features": plot_yearly_feature_importances,
+    "mortality": plot_county_metric_maps,
+}
+
 def main():
     # Parse command-line arguments
     args = get_args()
+
+    # Check if model template exists
+    if args.model not in MODEL_REGISTRY:
+        raise ValueError(f"Unknown model: {args.model}. "
+                         f"Available: {list(MODEL_REGISTRY.keys())}")
+
+    if args.plot not in PLOT_DISPATCH:
+        raise ValueError(f"Unknown plot type: {args.plot}. "
+                         f"Available: {list(PLOT_DISPATCH.keys())}")
 
     # Load data
     data = CountyDataLoader()
@@ -71,7 +86,7 @@ def main():
 
     # Load model defaults and overrides
     model_kwargs = {}
-    
+
     # Load from YAML config if provided
     if args.config:
         print(f" Loading model config from {args.config}")
@@ -80,11 +95,6 @@ def main():
     # Parse command line model kwargs if provided
     if args.model_args:
         model_kwargs.update(parse_model_args(args.model_args))
-
-    # Check if model template exists
-    if args.model not in MODEL_REGISTRY:
-        raise ValueError(f"Unknown model: {args.model}. "
-                         f"Available: {list(MODEL_REGISTRY.keys())}")
 
     model = MODEL_REGISTRY[args.model](**model_kwargs)  # dynamically pick model
 
@@ -95,17 +105,13 @@ def main():
 
     risk_scores = compute_all_risk_scores(predictions)
 
-    PLOT_DISPATCH = {
-        "risk": lambda: plot_county_metric_maps(risk_scores, "AbsError_Risk", save_dir=save_dir),
-        "features": lambda: plot_yearly_feature_importances(feature_importances, save_dir=save_dir),
-        "mortality": lambda: plot_county_metric_maps(df, "mortality_rate", save_dir=save_dir),
-    }
-
-    if args.plot not in PLOT_DISPATCH:
-        raise ValueError(f"Unknown plot type: {args.plot}. "
-                         f"Available: {list(PLOT_DISPATCH.keys())}")
-
-    PLOT_DISPATCH[args.plot]()  # run selected plotting function
+    match args.plot:
+        case "risk":
+            PLOT_DISPATCH["risk"](risk_scores, "AbsError_Risk", save_dir=save_dir)  # run selected plotting function
+        case "features":
+            PLOT_DISPATCH["features"](feature_importances, save_dir=save_dir)  # run selected plotting function
+        case "mortality":
+            PLOT_DISPATCH["mortality"](df, "mortality_rate", save_dir=save_dir)  # run selected plotting function
 
 
 if __name__ == "__main__":
