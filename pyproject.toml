@@ -14,3 +14,19 @@ dependencies = [
     "seaborn>=0.13.2",
     "xgboost>=3.1.1",
 ]
+
+[dependency-groups]
+dev = [
+    {include-group = "lint"},
+    {include-group = "type"}
+]
+lint = [
+    "pylsp-mypy>=0.7.0",
+    "pylsp-rope>=0.1.17",
+    "python-lsp-ruff>=2.3.0",
+    "python-lsp-server>=1.13.1",
+    "ruff>=0.14.4",
+]
+type = [
+    "types-geopandas>=1.1.1.20250829",
+]
