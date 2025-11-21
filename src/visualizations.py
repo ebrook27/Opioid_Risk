@@ -1,7 +1,9 @@
 ### 11/07/25, EB: Here I am adding plotting utilities functions for maps, feature importance plots, etc.
 
 import os
+from typing import Union
 import pandas as pd
+import polars as pl
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
@@ -217,3 +219,179 @@ def plot_yearly_feature_importances(
             print(f"✅ Saved: {fname}")
         else:
             plt.show()
+
+
+def plot_triple_metric_maps(
+    df: Union[pl.DataFrame, pd.DataFrame],
+    risk_scores: pd.DataFrame,
+    save_dir: str | None = None,
+    error_col: str = "AbsError",
+    cmap_risk: str = "Reds",
+    dpi: int = 300,
+    filter_CONUS: bool = True,
+):
+    """
+    Plot 3 side-by-side maps per year:
+        (1) Mortality rate
+        (2) Equal-weighted risk
+        (3) EWMA risk
+
+    Parameters
+    ----------
+    df : pd.DataFrame or Polars DataFrame
+        Dataset containing ['FIPS', 'year', 'mortality_rate'].
+    risk_scores : pd.DataFrame
+        Output from `compute_all_risk_scores()`; must include ['FIPS', 'Year', '{error_col}_Risk', '{error_col}_EWMA_Risk'].
+    save_dir : str or None, optional
+        Directory to save plots. If None, maps are displayed interactively.
+    error_col : str, default="AbsError"
+        Base name of error column used for risk scores.
+    cmap_risk : str, default="Reds"
+        Colormap for risk visualizations.
+    dpi : int, default=300
+        Resolution for saved figures.
+    filter_CONUS : bool, default=True
+        Exclude Alaska, Hawaii, and Puerto Rico.
+
+    Notes
+    -----
+    - Shapefile path is fixed to your repo convention.
+    - start_year and end_year inferred automatically from risk_scores['Year'].
+    """
+
+    # --- Load shapefile (fixed path for this repo) ---
+    shapefile_path = Path("data/Processed/2022_County_Shapefile/2022_filtered_shapefile.shp")
+    print(f"📂 Loading shapefile: {shapefile_path}")
+    gdf = gpd.read_file(shapefile_path)
+    gdf["FIPS"] = gdf["GEOID"].astype(str).str.zfill(5)
+
+    # --- Optional: filter to CONUS only ---
+    if filter_CONUS:
+        exclude_prefixes = ("02", "15", "72")  # AK, HI, PR
+        gdf = gdf[~gdf["FIPS"].str.startswith(exclude_prefixes)].copy()
+
+    # --- Compute state boundaries once for overlay ---
+    if "STATEFP" in gdf.columns:
+        state_boundaries = gdf.dissolve(by="STATEFP", as_index=False)
+    else:
+        state_boundaries = None
+
+    # --- Prepare mortality + risk data ---
+    df = df.to_pandas() if not isinstance(df, pd.DataFrame) else df
+    
+    # --- Normalize column names for consistency ---
+    df.columns = [c.capitalize() if c.lower() == "year" else c for c in df.columns]
+    risk_scores.columns = [c.capitalize() if c.lower() == "year" else c for c in risk_scores.columns]
+    
+    df["FIPS"] = df["FIPS"].astype(str).str.zfill(5)
+    risk_scores["FIPS"] = risk_scores["FIPS"].astype(str).str.zfill(5)
+
+    merged = (
+        gdf.merge(df[["FIPS", "Year", "mortality_rate"]], on="FIPS", how="left")
+           .merge(risk_scores, on=["FIPS", "Year"], how="left")
+    )
+
+    # --- Infer year range automatically ---
+    years = sorted(merged["Year"].dropna().unique())
+    if not years:
+        raise ValueError("No valid 'Year' values found in merged dataset.")
+    start_year, end_year = years[0], years[-1]
+
+    print(f"🗺️ Generating triple maps for {start_year}–{end_year} ({len(years)} years)")
+
+    # --- Compute global colorbar scales for consistency ---
+    vmin_mort, vmax_mort = merged["mortality_rate"].min(), merged["mortality_rate"].max()
+    vmin_risk, vmax_risk = merged[f"{error_col}_Risk"].min(), merged[f"{error_col}_Risk"].max()
+    vmin_ewma, vmax_ewma = merged[f"{error_col}_EWMA_Risk"].min(), merged[f"{error_col}_EWMA_Risk"].max()
+
+    # --- Ensure save directory exists if requested ---
+    save_path: Path | None = None
+    if save_dir is not None:
+        save_path = Path(save_dir) / "maps"
+        save_path.mkdir(parents=True, exist_ok=True)
+
+    for year in years:
+        subset = merged[merged["Year"] == year].copy()
+        if subset.empty:
+            continue
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
+
+        # (1) Mortality rate (always Reds)
+        subset.plot(
+            column="mortality_rate",
+            cmap="Reds",
+            ax=axes[0],
+            linewidth=0.075,
+            edgecolor="lightgray",
+            legend=True,
+            vmin=vmin_mort,
+            vmax=vmax_mort,
+            legend_kwds={
+                "orientation": "horizontal",
+                "shrink": 0.6,
+                "pad": 0.05,
+                "label": "Mortality Rate",
+            },
+        )
+        if state_boundaries is not None:
+            state_boundaries.boundary.plot(ax=axes[0], color="black", linewidth=0.4, zorder=2)
+        axes[0].set_title(f"Mortality Rate — {year}")
+        axes[0].axis("off")
+
+        # (2) Equal-weighted risk
+        subset.plot(
+            column=f"{error_col}_Risk",
+            cmap=cmap_risk,
+            ax=axes[1],
+            linewidth=0.075,
+            edgecolor="lightgray",
+            legend=True,
+            vmin=vmin_risk,
+            vmax=vmax_risk,
+            legend_kwds={
+                "orientation": "horizontal",
+                "shrink": 0.6,
+                "pad": 0.05,
+                "label": f"Equal-weight {error_col} Risk",
+            },
+        )
+        if state_boundaries is not None:
+            state_boundaries.boundary.plot(ax=axes[1], color="black", linewidth=0.4, zorder=2)
+        axes[1].set_title(f"Equal-weight {error_col} Risk — {year}")
+        axes[1].axis("off")
+
+        # (3) EWMA risk
+        subset.plot(
+            column=f"{error_col}_EWMA_Risk",
+            cmap='Greens',
+            ax=axes[2],
+            linewidth=0.075,
+            edgecolor="lightgray",
+            legend=True,
+            vmin=vmin_ewma,
+            vmax=vmax_ewma,
+            legend_kwds={
+                "orientation": "horizontal",
+                "shrink": 0.6,
+                "pad": 0.05,
+                "label": f"EWMA {error_col} Risk",
+            },
+        )
+        if state_boundaries is not None:
+            state_boundaries.boundary.plot(ax=axes[2], color="black", linewidth=0.4, zorder=2)
+        axes[2].set_title(f"EWMA {error_col} Risk — {year}")
+        axes[2].axis("off")
+
+        # This was causing an issue with the initial 'constrained_layout=True' above
+        # plt.tight_layout() 
+
+        # --- Save or show ---
+        if save_path is not None:
+            fname = save_path / f"TripleMap_{error_col}_{year}.png"
+            plt.savefig(fname, dpi=dpi, bbox_inches="tight")
+            plt.close(fig)
+            print(f"✅ Saved: {fname}")
+        else:
+            plt.show()
+

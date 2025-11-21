@@ -1,0 +1,23 @@
+# model_name: "mlp"
+
+# parameters:
+# --- Architecture ---
+hidden_layer_sizes: [128, 64, 32]   # 3-layer MLP
+activation: "relu"                  # relu, tanh, or logistic
+solver: "adam"                      # adam, lbfgs, or sgd
+
+# --- Optimization ---
+learning_rate: "adaptive"           # constant, invscaling, or adaptive
+learning_rate_init: 0.001           # initial learning rate
+batch_size: 128                     # minibatch size
+max_iter: 500                       # maximum training iterations
+n_iter_no_change: 20                # early-stopping patience
+alpha: 0.0001                       # L2 regularization strength
+
+# --- Early stopping ---
+early_stopping: true
+validation_fraction: 0.1            # proportion of training data for validation
+
+# --- Reproducibility & Verbosity ---
+random_state: 42
+verbose: false
