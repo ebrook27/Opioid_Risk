@@ -229,6 +229,7 @@ def plot_triple_metric_maps(
     cmap_risk: str = "Reds",
     dpi: int = 300,
     filter_CONUS: bool = True,
+    model_name: str | None = None,
 ):
     """
     Plot 3 side-by-side maps per year:
@@ -358,7 +359,8 @@ def plot_triple_metric_maps(
         )
         if state_boundaries is not None:
             state_boundaries.boundary.plot(ax=axes[1], color="black", linewidth=0.4, zorder=2)
-        axes[1].set_title(f"Equal-weight {error_col} Risk — {year}")
+        # axes[1].set_title(f"Equal-weight {error_col} Risk — {year}")
+        axes[1].set_title(f"Equal-weight Risk — {year}, Model: {model_name}" if model_name else f"Equal-weight Risk — {year}")
         axes[1].axis("off")
 
         # (3) EWMA risk
@@ -380,7 +382,8 @@ def plot_triple_metric_maps(
         )
         if state_boundaries is not None:
             state_boundaries.boundary.plot(ax=axes[2], color="black", linewidth=0.4, zorder=2)
-        axes[2].set_title(f"EWMA {error_col} Risk — {year}")
+        # axes[2].set_title(f"EWMA {error_col} Risk — {year}")
+        axes[2].set_title(f"Exponentially-Weighted Risk — {year}, Model: {model_name}" if model_name else f"Exponentially-Weighted Risk — {year}")
         axes[2].axis("off")
 
         # This was causing an issue with the initial 'constrained_layout=True' above

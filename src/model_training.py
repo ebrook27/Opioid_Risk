@@ -23,7 +23,7 @@ def yearly_mortality_prediction_polars(
     feature_cols: list[str] | None = None,
     n_splits: int = 5,
     save_path: str | None = None,
-):
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[float], Path]:
     """
     Train and evaluate a general regression model (sklearn-style) to predict
     next-year mortality using previous-year features, keeping Polars operations
@@ -148,6 +148,8 @@ def yearly_mortality_prediction_polars(
     )
 
     # --- Optional save ---
+    save_dir = None
+    
     if save_path:
         # We create a timestamped filename to avoid overwriting.
         model_name = model.__class__.__name__
@@ -169,3 +171,158 @@ def yearly_mortality_prediction_polars(
 
     return metrics_df, feature_importance_df, predictions_df, all_errors, save_dir
 
+
+import joblib
+import json
+from typing import Tuple, List, Optional
+
+def national_counterfact_initial_training(
+    df: pl.DataFrame,
+    model,
+    feature_cols: list[str] | None = None,
+    n_splits: int = 5,
+    save_path: str | None = None,
+) -> Tuple[
+    pd.DataFrame,        # metrics_df
+    pd.DataFrame,        # feature_importance_df
+    pd.DataFrame,        # predictions_df
+    List[float],         # all_errors
+    Path | None          # save_dir
+]:
+    """
+    TRAINING FUNCTION: Produces out-of-sample predictions using K-fold CV
+    AND saves a fold-specific model for each prediction year inside:
+        <save_path>/<model_name>/<timestamp>/models/
+    """
+
+    target_col = "mortality_rate"
+    metrics_all_years = []
+    feature_importance_all = []
+    all_predictions = []
+    all_errors = []
+
+    df = df.drop_nulls(subset=[target_col])
+
+    years = df["year"].unique().to_list()
+    start_year, end_year = min(years), max(years)
+
+    # Infer features
+    if feature_cols is None:
+        exclude = {"FIPS", "year", target_col, "urbanicity_class"}
+        feature_cols = [c for c in df.columns if c not in exclude]
+
+    # Prepare save directory
+    save_dir = None
+    models_dir = None
+
+    if save_path:
+        model_name = model.__class__.__name__
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        save_dir = Path(save_path) / model_name.lower() / timestamp
+        models_dir = save_dir / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save feature list
+        with (save_dir / "feature_cols.json").open("w") as f:
+            json.dump(feature_cols, f, indent=2)
+
+    # YEARLY CV LOOP
+    for year in range(start_year, end_year):
+
+        df_train = df.filter(pl.col("year") == year)
+        df_target = df.filter(pl.col("year") == year + 1)
+
+        if df_train.is_empty() or df_target.is_empty():
+            print(f"⚠️ Skipping {year}: missing data.")
+            continue
+
+        # Align counties
+        # common_fips = set(df_train["FIPS"]) & set(df_target["FIPS"])
+        common_fips = (
+            set(df_train.select("FIPS").to_series().to_list())
+            & set(df_target.select("FIPS").to_series().to_list())
+        )
+        df_train = df_train.filter(pl.col("FIPS").is_in(common_fips))
+        df_target = df_target.filter(pl.col("FIPS").is_in(common_fips))
+
+        X = df_train.select(feature_cols).to_pandas()
+        y   = df_target.select(target_col).to_numpy().ravel()
+        fips_target = df_target["FIPS"].to_list()
+
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+        metrics_folds = []
+
+        # FOLD LOOP
+        for fold_idx, (train_idx, test_idx) in enumerate(kf.split(X)):
+
+            X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+            y_train, y_test = y[train_idx], y[test_idx]
+            fips_test = [fips_target[i] for i in test_idx]
+
+            fold_model = clone(model)
+            fold_model.fit(X_train, y_train)
+
+            # SAVE MODEL LATER COUNTERFACTUAL PREDICTIONS
+            if models_dir:
+                model_fp = models_dir / f"model_year_{year+1}_fold{fold_idx+1}.pkl"
+                joblib.dump(fold_model, model_fp)
+
+            # Predict + store OOS predictions
+            y_pred = fold_model.predict(X_test)
+            abs_err = np.abs(y_test - y_pred)
+
+            all_errors.extend(abs_err.tolist())
+
+            fold_df = pd.DataFrame({
+                "FIPS": fips_test,
+                "Year": year + 1,
+                "True": y_test,
+                "Predicted": y_pred,
+                "Fold": fold_idx + 1,
+                "AbsError": abs_err,
+            })
+            all_predictions.append(fold_df)
+
+            # Metrics
+            metrics_folds.append({
+                "RMSE": np.sqrt(mean_squared_error(y_test, y_pred)),
+                "MAE": mean_absolute_error(y_test, y_pred),
+                "R2": r2_score(y_test, y_pred),
+                "Fold": fold_idx + 1,
+                "Year": year + 1,
+            })
+
+            # Feature importance?
+            if hasattr(fold_model, "feature_importances_"):
+                fi = pd.DataFrame({
+                    "Feature": feature_cols,
+                    "Importance": fold_model.feature_importances_,
+                    "Fold": fold_idx + 1,
+                    "Year": year + 1,
+                })
+                feature_importance_all.append(fi)
+
+        # Aggregate metrics
+        metrics_df_year = pd.DataFrame(metrics_folds).drop(columns="Fold").mean().to_dict()
+        metrics_df_year["Year"] = year + 1
+        metrics_all_years.append(metrics_df_year)
+
+    # Combine outputs
+    metrics_df = pd.DataFrame(metrics_all_years)
+    predictions_df = pd.concat(all_predictions, ignore_index=True)
+    fold_assignments_df = predictions_df[["FIPS", "Year", "Fold"]].drop_duplicates()
+    feature_importance_df = (
+        pd.concat(feature_importance_all, ignore_index=True)
+        if feature_importance_all else pd.DataFrame()
+    )
+
+    # Save metrics/predictions
+    if save_dir:
+        metrics_df.to_csv(save_dir / "metrics.csv", index=False)
+        predictions_df.to_csv(save_dir / "predictions.csv", index=False)
+        fold_assignments_df.to_csv(save_dir / "fold_assignments.csv", index=False)
+        if not feature_importance_df.empty:
+            feature_importance_df.to_csv(save_dir / "feature_importance.csv", index=False)
+
+    return (metrics_df, feature_importance_df, predictions_df, all_errors, save_dir)

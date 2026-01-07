@@ -102,7 +102,7 @@ def main():
         "risk": lambda: viz.plot_county_metric_maps(risk_scores, "AbsError_Risk", save_dir=save_dir),
         "features": lambda: viz.plot_yearly_feature_importances(feature_importances, save_dir=save_dir),
         "mortality": lambda: viz.plot_county_metric_maps(df, "mortality_rate", save_dir=save_dir),
-        "triple_map": lambda: viz.plot_triple_metric_maps(df, risk_scores, save_dir=save_dir, cmap_risk='Blues', error_col="AbsError"),
+        "triple_map": lambda: viz.plot_triple_metric_maps(df, risk_scores, save_dir=save_dir, cmap_risk='Blues', error_col="AbsError", model_name=args.model),
     }
 
     if args.plot not in PLOT_DISPATCH:
