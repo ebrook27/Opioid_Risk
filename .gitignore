@@ -12,3 +12,11 @@ wheels/
 # Generated experiment outputs
 model_outputs/
 counterfactual_comparison/
+dlnm_models/3cb_fe_loop/
+dlnm_models/saved_dlnm_models/
+
+# R session/history artifacts
+.RData
+.Rhistory
+*.RData
+*.Rhistory

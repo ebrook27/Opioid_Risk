@@ -246,7 +246,7 @@ def national_counterfact_initial_training(
         df_target = df_target.filter(pl.col("FIPS").is_in(common_fips))
 
         X = df_train.select(feature_cols).to_pandas()
-        y   = df_target.select(target_col).to_numpy().ravel()
+        y = df_target.select(target_col).to_numpy().ravel()
         fips_target = df_target["FIPS"].to_list()
 
         kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
