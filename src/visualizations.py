@@ -1,4 +1,5 @@
 ### 11/07/25, EB: Here I am adding plotting utilities functions for maps, feature importance plots, etc.
+### 3/4/26, EB: Added the shapley value bar plot+dendrogram function and integrated it into the main pipeline.
 
 import os
 from typing import Union
@@ -10,6 +11,9 @@ import matplotlib as mpl
 from matplotlib import colors, cm
 import seaborn as sns
 from pathlib import Path
+import shap
+from scipy.cluster.hierarchy import linkage
+import numpy as np
 
 
 
@@ -398,3 +402,462 @@ def plot_triple_metric_maps(
         else:
             plt.show()
 
+
+def plot_shap_bar_dendrogram(
+    shap_df: pd.DataFrame,
+    save_dir=None,
+    *,
+    by_year: bool = True,
+    max_display: int = 25,
+    linkage_method: str = "average",
+    use_abs_corr: bool = True,
+    dpi: int = 300,
+):
+    """
+    Plot SHAP bar plot with clustered feature dendrogram.
+
+    Assumes shap_df has EXACTLY these columns:
+      ['FIPS','Year','Fold','BaseValue','Predicted','Feature','SHAP']
+
+    Saves to: {save_dir}/shap/shap_bar_dendrogram_<YEAR>.png (or AllYears)
+    """
+
+    required = {"FIPS", "Year", "Fold", "BaseValue", "Predicted", "Feature", "SHAP"}
+    missing = required - set(shap_df.columns)
+    if missing:
+        raise ValueError(f"shap_df missing columns: {missing}")
+
+    df = shap_df.copy()
+    df["FIPS"] = df["FIPS"].astype(str).str.zfill(5)
+    df["Year"] = df["Year"].astype(int)
+
+    sns.set_theme(style="whitegrid")
+
+    def _plot_one(sub: pd.DataFrame, label: str):
+        # Pivot to wide: rows=(Year,Fold,FIPS), cols=Feature, values=SHAP
+        wide = sub.pivot_table(
+            index=["Year", "Fold", "FIPS"],
+            columns="Feature",
+            values="SHAP",
+            aggfunc="mean",
+        ).dropna(axis=1, how="all")
+
+        if wide.shape[1] == 0:
+            raise ValueError(f"No SHAP features found for label={label}")
+
+        M = wide.to_numpy()  # (n_obs, n_feat)
+
+        # Feature-feature correlation in SHAP space
+        C = np.corrcoef(M, rowvar=False)
+        C = np.nan_to_num(C, nan=0.0, posinf=0.0, neginf=0.0)
+
+        D = 1.0 - (np.abs(C) if use_abs_corr else C)
+
+        # condensed distance vector for scipy linkage
+        iu = np.triu_indices(D.shape[0], k=1)
+        d_condensed = D[iu]
+        Z = linkage(d_condensed, method=linkage_method)
+
+        expl = shap.Explanation(values=M, feature_names=list(wide.columns))
+
+        plt.figure(figsize=(10, 6))
+        shap.plots.bar(expl, max_display=max_display, clustering=Z, clustering_cutoff=1, show=False)
+        plt.title(f"SHAP |mean| + dendrogram — {label}", fontsize=12)
+        plt.tight_layout()
+
+        if save_dir:
+            out_dir = Path(save_dir) / "shap"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            fp = out_dir / f"shap_bar_dendrogram_{label}.png"
+            plt.savefig(fp, dpi=dpi, bbox_inches="tight")
+            plt.close()
+            print(f"✅ Saved: {fp}")
+        else:
+            plt.show()
+
+    if by_year:
+        for yr in sorted(df["Year"].unique()):
+            sub = df[df["Year"] == yr]
+            if not sub.empty:
+                _plot_one(sub, label=str(yr))
+    else:
+        _plot_one(df, label="AllYears")
+
+
+def plot_temporal_shap_corr_heatmap(
+    shap_source: str | Path | pd.DataFrame,
+    save_dir: str | Path | None = None,
+    *,
+    years: list[int] | None = None,
+    top_k_pairs: int = 20,
+    use_abs_corr: bool = True,
+    min_obs: int = 500,
+    dpi: int = 300,
+):
+    """
+    Temporal heatmap of feature-pair SHAP correlations.
+
+    Expects SHAP long table with columns:
+      ['FIPS','Year','Fold','Feature','SHAP'] (+ optionally BaseValue, Predicted)
+
+    Output heatmap:
+      rows = feature pairs (i|j)
+      cols = years
+      values = corr (or abs(corr)) between SHAP columns across counties
+
+    Parameters
+    ----------
+    shap_source : path or DataFrame
+        Path to shap_values.parquet OR the loaded shap_df.
+    years : list[int] or None
+        Restrict to these years.
+    top_k_pairs : int
+        Show only the K feature-pairs with largest mean |corr| across years.
+        (Keeps the heatmap readable.)
+    use_abs_corr : bool
+        If True, heatmap shows |corr|. If False, shows signed corr.
+    min_obs : int
+        Minimum number of observations (counties) required to compute a year's corr matrix.
+    """
+
+    # ---- load ----
+    if isinstance(shap_source, pd.DataFrame):
+        df = shap_source.copy()
+    else:
+        p = Path(shap_source)
+        if p.suffix.lower() == ".parquet":
+            df = pd.read_parquet(p)
+        else:
+            df = pd.read_csv(p)
+
+    required = {"Year", "Fold", "FIPS", "Feature", "SHAP"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"SHAP table missing columns: {missing}")
+
+    df["FIPS"] = df["FIPS"].astype(str).str.zfill(5)
+    df["Year"] = df["Year"].astype(int)
+
+    if years is not None:
+        df = df[df["Year"].isin(years)].copy()
+
+    yrs = sorted(df["Year"].unique())
+    if not yrs:
+        raise ValueError("No years available after filtering.")
+
+    # ---- compute Ct per year, then stack upper triangles into (pair, year) ----
+    pair_series = []
+    pair_index = None
+
+    for yr in yrs:
+        sub = df[df["Year"] == yr]
+        wide = sub.pivot_table(
+            index=["Year", "Fold", "FIPS"],
+            columns="Feature",
+            values="SHAP",
+            aggfunc="mean",
+        ).dropna(axis=1, how="all")
+
+        if wide.shape[0] < min_obs or wide.shape[1] < 2:
+            continue
+
+        M = wide.to_numpy()
+        C = np.corrcoef(M, rowvar=False)
+        C = np.nan_to_num(C, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if use_abs_corr:
+            C = np.abs(C)
+
+        feats = list(wide.columns)
+        iu = np.triu_indices(len(feats), k=1)
+
+        pairs = [f"{feats[i]} | {feats[j]}" for i, j in zip(iu[0], iu[1])]
+        vals = C[iu]
+
+        s = pd.Series(vals, index=pairs, name=yr)
+        pair_series.append(s)
+
+        if pair_index is None:
+            pair_index = pairs
+
+    if not pair_series:
+        raise ValueError("No years met min_obs requirement; heatmap not created.")
+
+    corr_by_year = pd.concat(pair_series, axis=1).sort_index()
+    corr_by_year = corr_by_year.reindex(sorted(corr_by_year.columns), axis=1)
+
+    # ---- select top K pairs by mean value across years ----
+    mean_strength = corr_by_year.mean(axis=1).sort_values(ascending=False)
+    keep = mean_strength.head(top_k_pairs).index
+    heat = corr_by_year.loc[keep]
+
+    # ---- plot ----
+    sns.set_theme(style="whitegrid")
+    plt.figure(figsize=(max(8, 0.8 * len(heat.columns)), max(6, 0.22 * len(heat))))
+    # ax = sns.heatmap(
+    #     heat,
+    #     cmap="viridis",
+    #     vmin=0.0,
+    #     vmax=1.0,
+    #     linewidths=0.2,
+    #     linecolor="white",
+    # )
+    if use_abs_corr:
+        ax = sns.heatmap(
+            heat,
+            cmap="viridis",
+            vmin=0.0,
+            vmax=1.0,
+            linewidths=0.2,
+            linecolor="white",
+        )
+    else:
+        ax = sns.heatmap(
+            heat,
+            cmap="coolwarm",
+            vmin=-1.0,
+            vmax=1.0,
+            center=0,
+            linewidths=0.2,
+            linecolor="white",
+        )
+    title = "Temporal SHAP feature–feature correlation"
+    title += " (abs)" if use_abs_corr else " (signed)"
+    ax.set_title(title, fontsize=12)
+    ax.set_xlabel("Year")
+    ax.set_ylabel("Feature pair (i | j)")
+    plt.tight_layout()
+
+    if save_dir is not None:
+        out_dir = Path(save_dir) / "shap"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fp = out_dir / f"shap_temporal_corr_heatmap_top{top_k_pairs}.png"
+        plt.savefig(fp, dpi=dpi, bbox_inches="tight")
+        plt.close()
+        print(f"✅ Saved: {fp}")
+    else:
+        plt.show()
+
+
+def plot_shap_importance_trajectories(
+    shap_source: str | Path | pl.DataFrame,
+    save_dir: str | Path | None = None,
+    *,
+    top_k: int | None = None,
+    dpi: int = 300,
+):
+    """
+    Plot feature importance trajectories over time:
+        importance(feature, year) = mean(|SHAP|) across counties.
+
+    Expects long SHAP table with at least columns:
+      ['Year','Feature','SHAP']
+    """
+
+    # ---- Load ----
+    if isinstance(shap_source, pl.DataFrame):
+        df = shap_source.clone()
+    elif isinstance(shap_source, pd.DataFrame):
+        df = pl.from_pandas(shap_source)
+    else:
+        p = Path(shap_source)
+        if p.suffix.lower() == ".parquet":
+            df = pl.read_parquet(p)
+        else:
+            df = pl.read_csv(p)
+
+    df = df.with_columns([
+        pl.col("Year").cast(pl.Int32),
+        pl.col("Feature").cast(pl.Utf8),
+        pl.col("SHAP").cast(pl.Float64),
+        pl.col("SHAP").abs().alias("ABS_SHAP"),
+    ])
+
+    # importance per (year, feature)
+    imp = (
+        df.group_by(["Year", "Feature"])
+          .agg(pl.col("ABS_SHAP").mean().alias("mean_abs_shap"))
+          .sort(["Year", "mean_abs_shap"], descending=[False, True])
+    )
+
+    # Convert to pandas for seaborn lineplot (seaborn expects pandas)
+    imp_pd = imp.to_pandas()
+
+    sns.set_theme(style="whitegrid")
+    plt.figure(figsize=(11, 6))
+
+    ax = sns.lineplot(
+        data=imp_pd,
+        x="Year",
+        y="mean_abs_shap",
+        hue="Feature",
+        marker="o",
+    )
+    ax.set_title("SHAP feature importance trajectories: mean(|SHAP|) vs year", fontsize=12)
+    ax.set_ylabel("mean(|SHAP|)")
+    ax.set_xlabel("Year")
+    ax.legend(title="Feature", bbox_to_anchor=(1.02, 1), loc="upper left", borderaxespad=0)
+    plt.tight_layout()
+
+    if save_dir is not None:
+        out_dir = Path(save_dir) / "shap"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fp = out_dir / f"shap_importance_trajectories{'_top'+str(top_k) if top_k else ''}.png"
+        plt.savefig(fp, dpi=dpi, bbox_inches="tight")
+        plt.close()
+        print(f"✅ Saved: {fp}")
+    else:
+        plt.show()
+
+
+def plot_cohort_mean_variable_over_time(
+    risk_scores: pl.DataFrame,
+    df: pl.DataFrame,
+    risk_col: str = "AbsError_Risk",
+    target_col: str = "mortality_rate",
+    cohorts: tuple = (0.5, 0.9, 1.0),
+    labels: tuple | None = None,
+    save_dir: str | None = None,
+    figsize: tuple = (10, 6),
+    dpi: int = 300,
+):
+    """
+    Split counties into annual cohorts by risk score and plot mean target variable over time.
+
+    Parameters
+    ----------
+    risk_scores : pl.DataFrame
+        Polars DataFrame with at least ['FIPS', 'Year', risk_col].
+    df : pl.DataFrame
+        Polars DataFrame containing observed `target_col` by ['FIPS','Year'].
+    risk_col : str
+        Column name in `risk_scores` containing the risk metric to rank counties.
+    target_col : str
+        Column name in `df` containing the observed target variable.
+    cohorts : tuple
+        Increasing quantile cutpoints (e.g., (0.5, 0.9, 1.0) -> bottom 50%, mid 40%, top 10%).
+    labels : tuple
+        Labels for the resulting cohorts (length must be len(cohorts)).
+    save_dir : str or None
+        Directory to save the plot PNG. If None, shows interactively.
+    figsize : tuple
+        Figure size.
+    dpi : int
+        Resolution for saved PNG.
+
+    Notes
+    -----
+    - Cohorts are computed separately for each year (counties may shift cohorts over time).
+    """
+
+    # --- Convert to pandas for convenience with q-cut and plotting ---
+    rs = risk_scores.to_pandas() if isinstance(risk_scores, pl.DataFrame) else risk_scores.copy()
+    df_pd = df.to_pandas() if isinstance(df, pl.DataFrame) else df.copy()
+
+    # --- Normalize column names and dtypes ---
+    for d in (rs, df_pd):
+        if "FIPS" in d.columns:
+            d["FIPS"] = d["FIPS"].astype(str).str.zfill(5)
+        # Accept either 'Year' or 'year'
+        if "year" in d.columns and "Year" not in d.columns:
+            d.rename(columns={"year": "Year"}, inplace=True)
+
+    # Validate required columns
+    if "FIPS" not in rs.columns or "Year" not in rs.columns or risk_col not in rs.columns:
+        raise ValueError("risk_scores must contain 'FIPS', 'Year', and the specified risk_col")
+    if "FIPS" not in df_pd.columns or "Year" not in df_pd.columns or target_col not in df_pd.columns:
+        raise ValueError("df must contain 'FIPS', 'Year', and the specified target_col")
+
+    # --- Infer labels from cohorts if not provided ---
+    if labels is None:
+        # cohorts is a tuple of increasing quantiles (e.g., (0.5, 0.9, 1.0))
+        try:
+            cohort_qs = [float(q) for q in cohorts]
+        except Exception:
+            raise ValueError("`cohorts` must be numeric quantiles between 0 and 1")
+
+        if any(q <= 0 or q > 1 for q in cohort_qs):
+            raise ValueError("Quantile values in `cohorts` must be in the interval (0, 1].")
+
+        if any(cohort_qs[i] <= cohort_qs[i - 1] for i in range(1, len(cohort_qs))):
+            raise ValueError("`cohorts` must be strictly increasing (e.g., (0.5, 0.9, 1.0)).")
+
+        # widths in percentage for each cohort
+        widths = []
+        prev = 0.0
+        for q in cohort_qs:
+            widths.append((q - prev) * 100.0)
+            prev = q
+
+        # default names: try to be descriptive for common cases
+        n = len(widths)
+        if n == 1:
+            names = ["Top"]
+        elif n == 2:
+            names = ["Bottom", "Top"]
+        elif n == 3:
+            names = ["Bottom", "Middle", "Top"]
+        else:
+            names = [f"Cohort {i+1}" for i in range(n)]
+
+        def fmt_pct(p):
+            return f"{p:.0f}%" if p >= 1.0 else f"{p:.1f}%"
+
+        labels = tuple(f"{names[i]} {fmt_pct(widths[i])}" for i in range(n))
+
+    # Merge risk + outcome
+    merged = rs[["FIPS", "Year", risk_col]].merge(
+        df_pd[["FIPS", "Year", target_col]], on=["FIPS", "Year"], how="left"
+    )
+
+    years = sorted(merged["Year"].dropna().unique())
+    if not years:
+        raise ValueError("No valid Year values found after merging risk_scores and df")
+
+    records = []
+    for yr in years:
+        sub = merged[merged["Year"] == yr].dropna(subset=[risk_col, target_col]).copy()
+        if sub.empty:
+            continue
+
+        # compute quantiles
+        q_low = sub[risk_col].quantile(cohorts[0]) # Seems to think the tuple might not have index 0? But I'll never pass an empty tuple, so this should be fine.
+        q_mid = sub[risk_col].quantile(cohorts[1]) if len(cohorts) > 1 else q_low
+
+        bins = [-float("inf"), q_low, q_mid, float("inf")]
+        # assign cohorts: expect len(labels)==3 for default; allow labels length to match bins-1
+        if len(labels) != (len(bins) - 1):
+            raise ValueError("Number of labels must equal number of cohort bins")
+
+        sub["cohort"] = pd.cut(sub[risk_col], bins=bins, labels=labels, include_lowest=True)
+
+        grp = sub.groupby("cohort")[target_col].mean().reset_index()
+        grp["Year"] = yr
+        records.append(grp)
+
+    if not records:
+        raise ValueError("No cohort records computed — check input data and column names")
+
+    result = pd.concat(records, axis=0, ignore_index=True)
+
+    # Pivot for plotting
+    pivot = result.pivot(index="Year", columns="cohort", values=target_col)
+
+    sns.set_theme(style="whitegrid")
+    plt.figure(figsize=figsize)
+    ax = sns.lineplot(data=pivot, markers=True)
+    ax.set_title(f"Mean {target_col.replace('_', ' ').title()} by Risk Cohort: {labels} of {risk_col}", fontsize=12)
+    ax.set_ylabel(f"Mean {target_col.replace('_', ' ').title()}")
+    ax.set_xlabel("Year")
+    ax.legend(title="Cohort", bbox_to_anchor=(1.02, 1), loc="upper left", borderaxespad=0)
+    plt.tight_layout()
+
+    if save_dir is not None:
+        out_dir = Path(save_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fp = out_dir / f"cohort_mean_{target_col.replace('_', ' ').title().lower().replace(' ', '_')}_over_time.png"
+        plt.savefig(fp, dpi=dpi, bbox_inches="tight")
+        plt.close()
+        print(f"✅ Saved cohort mean {target_col.replace('_', ' ').title().lower().replace(' ', '_')} plot: {fp}")
+    else:
+        plt.show()

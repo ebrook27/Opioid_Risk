@@ -470,6 +470,7 @@ library(mgcv)
 library(data.table)
 library(ggplot2)
 library(dplyr)
+library(car)
 
 ############################
 ####### Data import ########
@@ -612,12 +613,15 @@ data_loader <- function()
 }
 
 ### Data construction and reshaping.
-data <- data_loader()
-
 eps <- 0.01
 
 df <- data_loader()
 setorder(df, FIPS, Year)
+
+
+### Restrict to just pre-covid
+# df <- df[Year < 2020]
+
 
 # Define the target variable
 df[, logMR := log(MR + eps)]
@@ -630,14 +634,16 @@ len_by_fips <- df[, .N, by = FIPS][order(N)]
 # show the shortest
 # len_by_fips[1:30]
 # counties that violate the requirement
-bad <- len_by_fips[N < 9]
-bad_fips <- bad[, FIPS]
+
+# bad <- len_by_fips[N < 9]
+precovid_bad <- len_by_fips[N < 6]
+bad_fips <- precovid_bad[, FIPS]
 df_ok <- df[!FIPS %in% bad_fips]
 
 
 ### DLNM Specifications.
 
-lag_max <- 2  # start with 2 or 3, not 4+, until stable
+lag_max <- 3  # start with 2 or 3, not 4+, until stable
 
 # Choose knots/boundaries globally (good practice)
 unemp_boundary <- range(df$Unemployment, na.rm = TRUE)
@@ -671,9 +677,9 @@ make_crossbases <- function(df_fit, lag_max,
   cb_unemp <- crossbasis(
     x      = df_fit$Unemployment,
     lag    = lag_max,
-    # argvar = list(fun="ns", knots=unemp_knots, Boundary.knots=unemp_boundary),
+    argvar = list(fun="ns", knots=unemp_knots, Boundary.knots=unemp_boundary),
     # argvar = list(fun = "lin"),
-    argvar = list(fun="ns", df=3),
+    # argvar = list(fun="ns", df=3),
     arglag = arglag_spec,
     group  = df_fit$FIPS
   )
@@ -681,9 +687,9 @@ make_crossbases <- function(df_fit, lag_max,
   cb_rx <- crossbasis(
     x      = df_fit$DR,
     lag    = lag_max,
-    # argvar = list(fun="ns", knots=rx_knots, Boundary.knots=rx_boundary),
+    argvar = list(fun="ns", knots=rx_knots, Boundary.knots=rx_boundary),
     # argvar = list(fun = "lin"),
-    argvar = list(fun="ns", df=3),
+    # argvar = list(fun="ns", df=3),
     arglag = arglag_spec,
     group  = df_fit$FIPS
   )
@@ -691,9 +697,9 @@ make_crossbases <- function(df_fit, lag_max,
   cb_unins <- crossbasis(
     x      = df_fit$uninsured_rate,
     lag    = lag_max,
-    # argvar = list(fun="ns", knots=unins_knots, Boundary.knots=unins_boundary),
+    argvar = list(fun="ns", knots=unins_knots, Boundary.knots=unins_boundary),
     # argvar = list(fun = "lin"),
-    argvar = list(fun="ns", df=3),
+    # argvar = list(fun="ns", df=3),
     arglag = arglag_spec,
     group  = df_fit$FIPS
   )
@@ -716,7 +722,7 @@ forms <- list(
 )
 
 
-####### Model functions:
+####### Model Functions:
 extract_model_summary <- function(fit, cb_unemp, cb_rx, cb_unins, df_fit, lag_max) {
   # ---- centering values ----
   cen_unemp <- as.numeric(median(df_fit$Unemployment, na.rm=TRUE))
@@ -760,8 +766,10 @@ extract_model_summary <- function(fit, cb_unemp, cb_rx, cb_unins, df_fit, lag_ma
   )
 }
 
+### File Naming helper 
 safe_slug <- function(x) gsub("[^A-Za-z0-9_\\-]+", "_", x)
 
+### Plotting function
 save_dlnm_plots <- function(summary_obj, spec_id, out_dir, outcome_label = "logMR_lead") {
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   
@@ -788,6 +796,7 @@ save_dlnm_plots <- function(summary_obj, spec_id, out_dir, outcome_label = "logM
       pred, "contour",
       xlab = var_label,
       ylab = "Lag (years)",
+      zlim = c(-3,3),
       key.title = title("Δ log(MR_{t+1})"),
       plot.title = title(main = paste0(var_label, " cross-basis surface (", spec_id, ")"))
     )
@@ -832,17 +841,116 @@ save_dlnm_plots <- function(summary_obj, spec_id, out_dir, outcome_label = "logM
   invisible(files)
 }
 
+### Statistical Testing Functions
+### We start by conducting a Wald Test, which tests whether the cross-basis terms are
+### ever all equal to zero at once. This is a way of testing how much information the CB
+### contributes to the overall model's fit.
+run_cb_wald_test <- function(fit, cb_obj, label) {
+  
+  # Names of coefficients actually estimated in the model
+  coef_names <- names(coef(fit))
+  
+  # Keep only the cross-basis columns that survived into the fitted model
+  cb_names <- intersect(colnames(cb_obj), coef_names)
+  
+  # If none are present, return a placeholder row instead of erroring out
+  if (length(cb_names) == 0L) {
+    return(data.frame(
+      term  = label,
+      test  = "Wald-F",
+      stat  = NA_real_,
+      df1   = NA_real_,
+      df2   = NA_real_,
+      p     = NA_real_,
+      n_par = 0L,
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  # Build restriction matrix selecting only this cross-basis block
+  L <- diag(length(coef_names))
+  rownames(L) <- coef_names
+  colnames(L) <- coef_names
+  L <- L[cb_names, , drop = FALSE]
+  
+  # Joint Wald F-test: all coefficients in this cross-basis = 0
+  lh <- car::linearHypothesis(
+    model = fit,
+    hypothesis.matrix = L,
+    rhs = rep(0, nrow(L)),
+    test = "F"
+  )
+  
+  out <- as.data.frame(lh)
+  
+  # Return a clean one-row summary
+  data.frame(
+    term  = label,
+    test  = "Wald-F",
+    stat  = out[2, "F"],
+    df1   = out[2, "Df"],
+    df2   = out[2, "Res.Df"],
+    p     = out[2, "Pr(>F)"],
+    n_par = length(cb_names),
+    stringsAsFactors = FALSE
+  )
+}
+
+run_cb_anova <- function(fit, type = 2, test.statistic = "F") {
+  
+  ao <- car::Anova(
+    mod = fit,
+    type = type,
+    test.statistic = test.statistic
+  )
+  
+  out <- as.data.frame(ao)
+  out$term <- rownames(out)
+  rownames(out) <- NULL
+  
+  out
+}
 
 
-plot_dir <- file.path("dlnm_models", "3cb_fe_loop", "plots")
+### Model Loop Setup
 
+# -----------------------------
+# Directory setup
+# -----------------------------
+loop_dir <- "ns_exp_ns_lag_lagmax3"
+base_dir <- file.path("dlnm_models", "3cb_fe_loop", loop_dir)
+plot_dir <- file.path(base_dir, "plots")
+fit_dir  <- file.path(base_dir, "fits")
+test_dir <- file.path(base_dir, "tests")
+
+dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(fit_dir,  recursive = TRUE, showWarnings = FALSE)
+dir.create(test_dir, recursive = TRUE, showWarnings = FALSE)
+
+# -----------------------------
+# Loop setup
+# -----------------------------
 lag_funs <- c("ns", "lin", "strata")
 
-results <- list()
+results       <- list()
+wald_results  <- list()
+anova_results <- list()
 
+# -----------------------------
+# Main loop
+# -----------------------------
 for (lag_fun in lag_funs) {
   
   message("---- Lag specification: ", lag_fun, " ----")
+  
+  lag_tag      <- paste0("lag_", safe_slug(lag_fun))
+  lag_plot_dir <- file.path(plot_dir, lag_tag)
+  lag_fit_dir  <- file.path(fit_dir,  lag_tag)
+  lag_test_dir  <- file.path(test_dir, lag_tag)
+  
+  dir.create(lag_plot_dir, recursive = TRUE, showWarnings = FALSE)
+  dir.create(lag_fit_dir,  recursive = TRUE, showWarnings = FALSE)
+  dir.create(lag_test_dir, recursive = TRUE, showWarnings = FALSE)
   
   # build crossbasis objects for this lag spec
   cbs <- make_crossbases(
@@ -858,17 +966,20 @@ for (lag_fun in lag_funs) {
   cb_rx    <- cbs$rx
   cb_unins <- cbs$unins
   
-  for (nm in names(forms)) {
+  for (model_name in names(forms)) {
     
-    message("Fitting model: ", nm)
+    message("Fitting model: ", model_name)
     
-    fit <- glm(forms[[nm]],
+    fit <- glm(forms[[model_name]],
                data = df_fit,
                family = gaussian(),
                na.action = na.omit)
     
-    spec_id <- paste0(nm, "__lag", lag_fun)
+    spec_id <- paste0(model_name, "__lag_", lag_fun)
     
+    # -----------------------------
+    # DLNM summaries + plots
+    # -----------------------------
     results[[spec_id]] <- extract_model_summary(
       fit,
       cb_unemp,
@@ -885,12 +996,78 @@ for (lag_fun in lag_funs) {
       outcome_label = "logMR_lead"
     )
     
+    # -----------------------------
+    # Save fitted model
+    # -----------------------------
     saveRDS(
       fit,
-      file = paste0("dlnm_models/3cb_fe_loop/dlnm_glm_",
-                    spec_id,
-                    "_lag", lag_max,
+      file = file.path(
+        lag_fit_dir,
+        paste0("dlnm_glm_",
+                    safe_slug(spec_id),
+                    "_lag",
+                    lag_max,
                     ".rds")
+      )
+    )
+    
+    # -----------------------------
+    # 1) Grouped Wald F-tests
+    # -----------------------------
+    wald_tbl <- rbind(
+      run_cb_wald_test(fit, cb_unemp, "cb_unemp"),
+      run_cb_wald_test(fit, cb_rx,    "cb_rx"),
+      run_cb_wald_test(fit, cb_unins, "cb_unins")
+    )
+    
+    wald_tbl$spec_id <- spec_id
+    wald_tbl$model   <- model_name
+    wald_tbl$lag_fun <- lag_fun
+    wald_tbl$lag_max <- lag_max
+    
+    # Put metadata columns first
+    wald_tbl <- wald_tbl[, c("spec_id", "model", "lag_fun", "lag_max",
+                             "term", "test", "stat", "df1", "df2", "p", "n_par")]
+    
+    wald_results[[spec_id]] <- wald_tbl
+    
+    write.csv(
+      wald_tbl,
+      file = file.path(
+        lag_test_dir,
+        paste0("wald__", safe_slug(spec_id), "__L", lag_max, ".csv")
+      ),
+      row.names = FALSE
+    )
+    
+    # -----------------------------
+    # 2) Type II ANOVA F-test
+    # -----------------------------
+    anova_tbl <- run_cb_anova(
+      fit,
+      type = 2,
+      test.statistic = "F"
+    )
+    
+    anova_tbl$spec_id <- spec_id
+    anova_tbl$model   <- model_name
+    anova_tbl$lag_fun <- lag_fun
+    anova_tbl$lag_max <- lag_max
+    
+    # Move metadata to front
+    anova_tbl <- anova_tbl[, c("spec_id", "model", "lag_fun", "lag_max",
+                               "term", setdiff(names(anova_tbl),
+                                               c("spec_id", "model", "lag_fun", "lag_max", "term")))]
+    
+    anova_results[[spec_id]] <- anova_tbl
+    
+    write.csv(
+      anova_tbl,
+      file = file.path(
+        lag_test_dir,
+        paste0("anova__", safe_slug(spec_id), "__L", lag_max, ".csv")
+      ),
+      row.names = FALSE
     )
     
     rm(fit)
@@ -898,16 +1075,37 @@ for (lag_fun in lag_funs) {
   }
 }
 
-
+# ---------------------------
+# Saving the Model Summaries 
+#  and Wald+ANOVA results
+# ---------------------------
 # save the small extracted objects
 saveRDS(results, file=paste0("dlnm_models/3cb_fe_loop/dlnm_glm_results_summaries_lag", lag_max, ".rds"))
 
+wald_all  <- do.call(rbind, wald_results)
+anova_all <- do.call(rbind, anova_results)
+
+write.csv(
+  wald_all,
+  file = file.path(test_dir, paste0("wald_all_models__L", lag_max, ".csv")),
+  row.names = FALSE
+)
+
+write.csv(
+  anova_all,
+  file = file.path(test_dir, paste0("anova_all_models__L", lag_max, ".csv")),
+  row.names = FALSE
+)
 
 
 
 
 
 
+
+
+##################################################################################
+### ----------------------------- Old Loop ---------------------------------------
 plot_dir <- file.path("dlnm_models", "3cb_fe_loop", "plots")
 
 results <- list()

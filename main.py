@@ -1,4 +1,5 @@
 ### 11/09/25, EB: Runs the risk score modelling pipeline, and produces maps of the risk scores for each predicted year.
+### 3/4/26, EB: Added the SHAP bar dendrogram plot option.
 
 import src.model_training as train
 import src.data_processing as data_proc
@@ -28,7 +29,7 @@ def get_args():
         "--plot",
         type=str,
         default="risk",
-        choices=["risk", "features", "mortality", "triple_map"],
+        choices=["risk", "features", "mortality", "triple_map", "shap_bar", "shap_heatmap", "shap_traj"],
         help="Which plot to generate after training."
     )
 
@@ -90,7 +91,7 @@ def main():
     model = MODEL_REGISTRY[args.model](**model_kwargs)  # dynamically pick model
 
     # Run model training and prediction, save results
-    model_metrics, feature_importances, predictions, all_errors, save_dir = (
+    model_metrics, feature_importances, predictions, shap_df, all_errors, save_dir = (
         train.yearly_mortality_prediction_polars(df, model, save_path=args.save_dir)
     )
 
@@ -103,6 +104,9 @@ def main():
         "features": lambda: viz.plot_yearly_feature_importances(feature_importances, save_dir=save_dir),
         "mortality": lambda: viz.plot_county_metric_maps(df, "mortality_rate", save_dir=save_dir),
         "triple_map": lambda: viz.plot_triple_metric_maps(df, risk_scores, save_dir=save_dir, cmap_risk='Blues', error_col="AbsError", model_name=args.model),
+        "shap_bar": lambda: viz.plot_shap_bar_dendrogram(shap_df, save_dir=save_dir, by_year=True),
+        "shap_heatmap": lambda: viz.plot_temporal_shap_corr_heatmap(shap_df, save_dir=save_dir, top_k_pairs=20, use_abs_corr=False),
+        "shap_traj": lambda: viz.plot_shap_importance_trajectories(shap_df, save_dir=save_dir, top_k=15),
     }
 
     if args.plot not in PLOT_DISPATCH:

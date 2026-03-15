@@ -1232,13 +1232,27 @@ def main():
 
         run_dir = create_new_run_dir(args)
         run_national_counterfactual_multi_testing(args, df, run_dir)
-
-    else:
-        # CASE STUDY: reuse latest trained model
+    else: # 3/12/26, EB: Testing risk score cohort separation
         df, baseline_predictions, risk_scores, run_dir = load_shared_inputs(args)
-        run_case_study_counterfactual(
-            args, df, baseline_predictions, risk_scores, run_dir
-        )
+        cohort_groups = [(0.4, 0.6, 1.0), (0.5, 0.9, 1.0), (0.6, 0.95, 1.0)]
+        risk_score_types = ["AbsError_Risk", "SqError_Risk", "RawError_Risk"]
+        for risk_col in risk_score_types:
+            for cohort in cohort_groups:
+                viz.plot_cohort_mean_variable_over_time(
+                    df=df,
+                    risk_scores=risk_scores,
+                    target_col="mortality_rate",
+                    save_dir=None,
+                    cohorts=cohort,
+                    risk_col=risk_col
+                )
+
+    # else:
+    #     # CASE STUDY: reuse latest trained model
+    #     df, baseline_predictions, risk_scores, run_dir = load_shared_inputs(args)
+    #     run_case_study_counterfactual(
+    #         args, df, baseline_predictions, risk_scores, run_dir
+    #     )
 
 if __name__ == "__main__":
     main()

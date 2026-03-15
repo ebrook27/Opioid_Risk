@@ -8,13 +8,66 @@ from sklearn.base import clone
 from datetime import datetime
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-
+import shap
+from typing import Any
 
 
 SVI_DATA = ['Aged 17 or Younger', 'Aged 65 or Older', 'Below Poverty', 'Crowding',
         'Group Quarters', 'Limited English Ability', 'Minority Status', 'Mobile Homes',
         'Multi-Unit Structures', 'No High School Diploma', 'No Vehicle',
         'Single-Parent Household', 'Unemployment']
+
+# For SHAP explainer choice
+def _is_tree_model(model: Any) -> bool:
+    name = model.__class__.__name__.lower()
+    return ("xgb" in name) or ("randomforest" in name) or ("extratrees" in name) or ("gradientboost" in name)
+
+def _compute_shap_oos_with_base(
+    model: Any,
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    *,
+    background_size: int = 256,
+    random_state: int = 1738,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute SHAP values for X_test (OOS) and return (shap_values, base_values_per_row).
+
+    shap_values: (n_test, n_features)
+    base_values_per_row: (n_test,)  # broadcasted if explainer returns scalar
+    """
+    if _is_tree_model(model):
+        explainer = shap.TreeExplainer(model)
+        exp = explainer(X_test)  # shap.Explanation
+        shap_vals = np.asarray(exp.values)
+        base_vals = np.asarray(exp.base_values)
+    else:
+        # background from TRAIN ONLY (no leakage)
+        rng = np.random.default_rng(random_state)
+        if len(X_train) <= background_size:
+            background = X_train
+        else:
+            idx = rng.choice(len(X_train), size=background_size, replace=False)
+            background = X_train.iloc[idx]
+
+        explainer = shap.Explainer(model.predict, background)
+        exp = explainer(X_test)
+        shap_vals = np.asarray(exp.values)      # type: ignore
+        base_vals = np.asarray(exp.base_values) # type: ignore
+
+    # Normalize base_vals to per-row vector length n_test
+    n_test = len(X_test)
+    if base_vals.ndim == 0:
+        base_per_row = np.full(n_test, float(base_vals))
+    else:
+        base_vals = base_vals.reshape(-1)
+        if len(base_vals) == n_test:
+            base_per_row = base_vals.astype(float)
+        else:
+            # some explainers return a single base value (len=1) or odd shape; broadcast first element
+            base_per_row = np.full(n_test, float(base_vals[0]))
+
+    return shap_vals, base_per_row
 
 
 def yearly_mortality_prediction_polars(
@@ -23,7 +76,9 @@ def yearly_mortality_prediction_polars(
     feature_cols: list[str] | None = None,
     n_splits: int = 5,
     save_path: str | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[float], Path]:
+    compute_shap: bool = True,
+    shap_background_size: int = 256,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, list[float], Path | None]:
     """
     Train and evaluate a general regression model (sklearn-style) to predict
     next-year mortality using previous-year features, keeping Polars operations
@@ -52,6 +107,7 @@ def yearly_mortality_prediction_polars(
     feature_importance_all = []
     all_predictions = []
     all_errors = []
+    shap_long_chunks = []
 
     # Drop rows missing the target
     df = df.drop_nulls(subset=[target_col])
@@ -133,6 +189,34 @@ def yearly_mortality_prediction_polars(
                     "Fold": fold_idx + 1,
                 })
                 feature_importance_all.append(fi)
+            
+            # --- SHAP values for this fold ---
+            if compute_shap:
+                try:
+                    shap_vals, base_per_row = _compute_shap_oos_with_base(
+                        fold_model,
+                        X_train,
+                        X_test,
+                        background_size=shap_background_size
+                    )
+                    # Create long (tidy) SHAP table: one row per (FIPS, Feature)
+                    temp = pd.DataFrame(shap_vals, columns=X.columns)
+                    temp["FIPS"] = fips_test
+                    temp["Year"] = year + 1
+                    temp["Fold"] = fold_idx + 1
+                    temp["BaseValue"] = base_per_row
+                    temp["Predicted"] = y_pred
+
+                    shap_long_df = temp.melt(
+                        id_vars=["FIPS", "Year", "Fold", "BaseValue", "Predicted"],
+                        var_name="Feature",
+                        value_name="SHAP"
+                    )
+                    # Only keep the long/tidy format to avoid mixing wide and long frames
+                    shap_long_chunks.append(shap_long_df)
+                
+                except Exception as e:
+                    print(f"⚠️ SHAP failed for Year={year+1}, Fold={fold_idx}: {e}")
 
         fold_df = pd.DataFrame(fold_metrics).drop(columns="fold")
         year_metrics = fold_df.mean().to_dict()
@@ -146,6 +230,7 @@ def yearly_mortality_prediction_polars(
         pd.concat(feature_importance_all, ignore_index=True)
         if feature_importance_all else pd.DataFrame()
     )
+    shap_df = pd.concat(shap_long_chunks, ignore_index=True) if shap_long_chunks else pd.DataFrame()
 
     # --- Optional save ---
     save_dir = None
@@ -166,10 +251,12 @@ def yearly_mortality_prediction_polars(
         predictions_df.to_csv(preds_fp, index=False)
         if not feature_importance_df.empty:
             feature_importance_df.to_csv(feats_fp, index=False)
+        if compute_shap and not shap_df.empty:
+            shap_df.to_parquet(save_dir / "shap_values.parquet", index=False)
 
         print(f"✅ Saved outputs to {save_path}")
 
-    return metrics_df, feature_importance_df, predictions_df, all_errors, save_dir
+    return metrics_df, feature_importance_df, predictions_df, shap_df, all_errors, save_dir
 
 
 import joblib
