@@ -16,6 +16,14 @@ dlnm_models/3cb_fe_loop/
 dlnm_models/saved_dlnm_models/
 dlnm_models/*.RDS
 
+# Ignoring large shapefiles
+data/Raw/Interstates_raw/
+*.shp
+*.dbf
+*.shx
+*.prj
+*.cpg
+
 # R session/history artifacts
 .RData
 .Rhistory

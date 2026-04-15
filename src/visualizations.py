@@ -84,21 +84,47 @@ def plot_county_metric_maps(
     years = sorted(merged["Year"].dropna().unique())
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
+        
+    # --- Better titleing ---
+    if value_col.lower() in ["mortality_rate", "mortality"]:
+        title_suffix = "Mortality Rates"
+    elif "abserror" in value_col.lower():
+        if "EWMA" in value_col:
+            title_suffix = "Exponentially-Weighted Absolute Error Risk Scores"
+        else: 
+            title_suffix = "Absolute Error Risk Scores"
+    elif "RawError" in value_col.lower():
+            if "EWMA" in value_col:
+                title_suffix = "Exponentially-Weighted Signed-Difference Risk Scores"
+            else: 
+                title_suffix = "Signed-Difference Risk Scores"
+    elif "SqError" in value_col.lower():
+        if "EWMA" in value_col.lower():
+            title_suffix = "Exponentially-Weighted Squared Error Risk Scores"
+        else:
+            title_suffix = "Squared Error Risk Scores"
+
+    # --- Compute global color scaling across all years ---
+    vals = merged[value_col]
+    if vals.dropna().empty:
+        raise ValueError(f"Column '{value_col}' contains no valid numeric values to plot.")
+
+    if center_zero:
+        global_max = vals.abs().max()
+        vmin_global, vmax_global = -global_max, global_max
+    else:
+        vmin_global, vmax_global = vals.min(), vals.max()
 
     # --- Iterate over years ---
     for yr in years:
         subset = merged[merged["Year"] == yr].copy()
 
         fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        title = f"{title_prefix + ' — ' if title_prefix else ''}{value_col} ({yr})"
+        title = f"{title_prefix + ' — ' if title_prefix else ''}{title_suffix} ({yr})"
         ax.set_title(title, fontsize=14)
 
-        # --- Compute color scaling ---
-        if center_zero:
-            vmax = subset[value_col].abs().max()
-            vmin = -vmax
-        else:
-            vmin, vmax = subset[value_col].min(), subset[value_col].max()
+        # --- Use global color scaling for consistent comparison across years ---
+        vmin, vmax = vmin_global, vmax_global
 
         # --- Plot choropleth ---
         subset.plot(
@@ -123,7 +149,8 @@ def plot_county_metric_maps(
         sm.set_array([])
         cbar = fig.colorbar(sm, ax=ax, orientation="vertical", fraction=0.025, pad=0.02)
         cbar.ax.tick_params(labelsize=9)
-        cbar.set_label(value_col, fontsize=10)
+        # Use the human-friendly title suffix for the colorbar label
+        cbar.set_label(title_suffix, fontsize=10)
 
         ax.axis("off")
         ax.set_aspect("equal")
@@ -306,8 +333,41 @@ def plot_triple_metric_maps(
 
     # --- Compute global colorbar scales for consistency ---
     vmin_mort, vmax_mort = merged["mortality_rate"].min(), merged["mortality_rate"].max()
-    vmin_risk, vmax_risk = merged[f"{error_col}_Risk"].min(), merged[f"{error_col}_Risk"].max()
-    vmin_ewma, vmax_ewma = merged[f"{error_col}_EWMA_Risk"].min(), merged[f"{error_col}_EWMA_Risk"].max()
+
+    # Helper to choose a normalization. If a diverging cmap is requested
+    # and the series spans negative and positive values, create a
+    # TwoSlopeNorm centered at 0 so the neutral (white) color falls at 0.
+    def _norm_for_series(series, cmap_name: str):
+        s = series.dropna()
+        if s.empty:
+            return None, None, colors.Normalize(vmin=0.0, vmax=1.0)
+        mn, mx = s.min(), s.max()
+        if mn == mx:
+            # avoid zero-range norm
+            return mn, mx, colors.Normalize(vmin=mn - 1e-6, vmax=mx + 1e-6)
+
+        diverging_cmaps = {
+            "bwr",
+            "seismic",
+            "coolwarm",
+            "RdBu",
+            "PiYG",
+            "PuOr",
+            "BrBG",
+        }
+
+        if cmap_name in diverging_cmaps and mn < 0 and mx > 0:
+            gmax = max(abs(mn), abs(mx))
+            return -gmax, gmax, colors.TwoSlopeNorm(vmin=-gmax, vcenter=0.0, vmax=gmax)
+        else:
+            return mn, mx, colors.Normalize(vmin=mn, vmax=mx)
+
+    # risk maps use the provided cmap_risk; EWMA map uses a sequential green cmap
+    # by default, but if the user passed a diverging cmap (e.g., 'bwr') we
+    # use the same diverging cmap for EWMA so centering at zero applies.
+    vmin_risk, vmax_risk, norm_risk = _norm_for_series(merged[f"{error_col}_Risk"], cmap_risk)
+    ewma_cmap = cmap_risk if cmap_risk in {"bwr", "seismic", "coolwarm", "RdBu"} else "Greens"
+    vmin_ewma, vmax_ewma, norm_ewma = _norm_for_series(merged[f"{error_col}_EWMA_Risk"], ewma_cmap)
 
     # --- Ensure save directory exists if requested ---
     save_path: Path | None = None
@@ -352,8 +412,7 @@ def plot_triple_metric_maps(
             linewidth=0.075,
             edgecolor="lightgray",
             legend=True,
-            vmin=vmin_risk,
-            vmax=vmax_risk,
+            norm=norm_risk,
             legend_kwds={
                 "orientation": "horizontal",
                 "shrink": 0.6,
@@ -370,13 +429,12 @@ def plot_triple_metric_maps(
         # (3) EWMA risk
         subset.plot(
             column=f"{error_col}_EWMA_Risk",
-            cmap='Greens',
+            cmap=ewma_cmap,
             ax=axes[2],
             linewidth=0.075,
             edgecolor="lightgray",
             legend=True,
-            vmin=vmin_ewma,
-            vmax=vmax_ewma,
+            norm=norm_ewma,
             legend_kwds={
                 "orientation": "horizontal",
                 "shrink": 0.6,

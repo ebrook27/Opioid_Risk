@@ -92,18 +92,18 @@ def main():
 
     # Run model training and prediction, save results
     model_metrics, feature_importances, predictions, shap_df, all_errors, save_dir = (
-        train.yearly_mortality_prediction_polars(df, model, save_path=args.save_dir)
+        train.yearly_mortality_prediction_polars(df, model, save_path=args.save_dir, compute_shap=False)
     )
 
-    risk_scores = metrics.compute_all_risk_scores(predictions)
+    risk_scores = metrics.compute_all_risk_scores(predictions, alpha=0.14) # 3/23/26, EB: alpha=0.14 was identified as best in scratch_scripts/ewma_alpha_sweep.py
     risk_scores_path = Path(save_dir) / "risk_scores.csv"
     risk_scores.to_csv(risk_scores_path, index=False)
 
     PLOT_DISPATCH = {
-        "risk": lambda: viz.plot_county_metric_maps(risk_scores, "AbsError_Risk", save_dir=save_dir),
+        "risk": lambda: viz.plot_county_metric_maps(risk_scores, "RawError_Risk", center_zero=True, cmap="bwr", save_dir=save_dir),
         "features": lambda: viz.plot_yearly_feature_importances(feature_importances, save_dir=save_dir),
-        "mortality": lambda: viz.plot_county_metric_maps(df, "mortality_rate", save_dir=save_dir),
-        "triple_map": lambda: viz.plot_triple_metric_maps(df, risk_scores, save_dir=save_dir, cmap_risk='Blues', error_col="AbsError", model_name=args.model),
+        "mortality": lambda: viz.plot_county_metric_maps(df, "AbsError_Risk", save_dir=save_dir),
+        "triple_map": lambda: viz.plot_triple_metric_maps(df, risk_scores, save_dir=save_dir, cmap_risk='bwr', error_col="RawError", model_name=args.model),#cmap_risk='Blues', error_col="AbsError"
         "shap_bar": lambda: viz.plot_shap_bar_dendrogram(shap_df, save_dir=save_dir, by_year=True),
         "shap_heatmap": lambda: viz.plot_temporal_shap_corr_heatmap(shap_df, save_dir=save_dir, top_k_pairs=20, use_abs_corr=False),
         "shap_traj": lambda: viz.plot_shap_importance_trajectories(shap_df, save_dir=save_dir, top_k=15),

@@ -36,7 +36,7 @@ UNEMP_CONFOUNDS = [
     'Aged 17 or Younger', 'Aged 65 or Older', 'Below Poverty', 'Crowding',
     'Group Quarters', 'Limited English Ability', 'Minority Status', 'Mobile Homes',
     'Multi-Unit Structures', 'No High School Diploma', 'No Vehicle',
-    'Single-Parent Household'
+    'Single-Parent Household', 'uninsured_rate'
 ]
 
 RX_CONFOUNDS = [
@@ -326,14 +326,31 @@ def main_PLR():
 
 
 def main_PLPR():
-    print("Running PLPR-DML analysis...")
     data = data_proc.CountyDataLoader()
     df = data.load()
-    earlier_years = df.filter(pl.col("year") < 2018)
-    pdf = make_dml_panel_PLPR(earlier_years, two_way=False, treatment=RX_TREATMENT, confounds=RX_CONFOUNDS)
+    # print("Running PLPR-DML analysis: fd_exact, two-way fixed effects included as year dummies, and full time period...")
+    # earlier_years = df.filter(pl.col("year") < 2017)
+    # pdf = make_dml_panel_PLPR(earlier_years, two_way=True, treatment=RX_TREATMENT, confounds=RX_CONFOUNDS)
+    # pdf = make_dml_panel_PLPR(df, two_way=True, treatment=RX_TREATMENT, confounds=RX_CONFOUNDS)
     
-    dml_panel_data = make_doubleml_panel_data(pdf, treatment=RX_TREATMENT, confounds=RX_CONFOUNDS)
-    dml_plpr = fit_plpr(dml_panel_data, learner_type="lasso")
+    # dml_panel_data = make_doubleml_panel_data(pdf, treatment=RX_TREATMENT, confounds=RX_CONFOUNDS)
+    # dml_plpr = fit_plpr(dml_panel_data, learner_type="random_forest")
+
+    # print("PLPR-DML results:")
+    # print(dml_plpr.summary)
+    # print('----------------------------------------------')
+    # print('')
+    # print('')
+    # print('-----------------------------------------------')
+    # Re-running, with just earlier years now, for sensitivity.
+    print("Running PLPR-DML analysis Unemploymeny: fd_exact, **NO year fixed effects**, and just years > 201...")
+
+    earlier_years = df.filter(pl.col("year") > 2018)
+    pdf = make_dml_panel_PLPR(earlier_years, two_way=False, treatment=UNEMP_TREATMENT, confounds=UNEMP_CONFOUNDS)
+    # pdf = make_dml_panel_PLPR(df, two_way=False, treatment=RX_TREATMENT, confounds=RX_CONFOUNDS)
+    
+    dml_panel_data = make_doubleml_panel_data(pdf, treatment=UNEMP_TREATMENT, confounds=UNEMP_CONFOUNDS)
+    dml_plpr = fit_plpr(dml_panel_data, learner_type="random_forest")
 
     print("PLPR-DML results:")
     print(dml_plpr.summary)

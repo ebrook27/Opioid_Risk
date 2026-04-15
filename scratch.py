@@ -77,232 +77,403 @@
 # print("mean distance:", d.mean())
 # print("max distance:", d.max())
 
-# ----------------------------------------------------------------------------------------------------------------------------
-# ----------------------------------------------------------------------------------------------------------------------------
+# # ----------------------------------------------------------------------------------------------------------------------------
+# # ----------------------------------------------------------------------------------------------------------------------------
 
-### 3/7/26, EB: Got weird results when using DLNM with county fixed effects. Trying to understand why.
-### I'm going to plot MR vs the four prioir years' unemployment rates to see if there's any obvious patterns.
+# ### 3/7/26, EB: Got weird results when using DLNM with county fixed effects. Trying to understand why.
+# ### I'm going to plot MR vs the four prioir years' unemployment rates to see if there's any obvious patterns.
 
-import seaborn as sns
-import matplotlib.pyplot as plt
-import polars as pl
-import src.data_processing as data_proc
+# import seaborn as sns
+# import matplotlib.pyplot as plt
+# import polars as pl
+# import src.data_processing as data_proc
 
-# Load data
-data = data_proc.CountyDataLoader()
-df = data.load()
-# Precovid period only for now
-# df = df.filter(pl.col("year") < 2020)
-df = df.sort(["FIPS", "year"])
-# print(df.select(["unemp_rate", "mortality_rate"]).describe())
-
-
-print(df.head(10))
-print(df.columns)
+# # Load data
+# data = data_proc.CountyDataLoader()
+# df = data.load()
+# # Precovid period only for now
+# # df = df.filter(pl.col("year") < 2020)
+# df = df.sort(["FIPS", "year"])
+# # print(df.select(["unemp_rate", "mortality_rate"]).describe())
 
 
-# mort_unemp = df.select("mortality_rate", "unemp_rate", "year", "FIPS")
+# print(df.head(10))
+# print(df.columns)
 
 
-# # Prepare list of years present
-# years = sorted(mort_unemp["year"].unique())
-# if years:
-#     min_year = min(years)
-#     max_year = max(years)
-# else:
-#     min_year = 0
-#     max_year = 0
+# # mort_unemp = df.select("mortality_rate", "unemp_rate", "year", "FIPS")
 
-# # For each target year >= 2017, plot mortality (target year) vs unemployment
-# # from the three prior years (target_year-3, -2, -1), colored by unemployment year.
-# for target_year in range(2017, max_year + 1):
-#     records = []
-#     for lag in (3, 2, 1):
-#         unemp_year = target_year - lag
-#         if unemp_year < min_year:
-#             continue
 
-#         un = mort_unemp.filter(pl.col("year") == unemp_year).select(["FIPS", "unemp_rate"])
-#         mort = mort_unemp.filter(pl.col("year") == target_year).select(["FIPS", "mortality_rate"])
+# # # Prepare list of years present
+# # years = sorted(mort_unemp["year"].unique())
+# # if years:
+# #     min_year = min(years)
+# #     max_year = max(years)
+# # else:
+# #     min_year = 0
+# #     max_year = 0
 
-#         joined = mort.join(un, on="FIPS", how="inner")
-#         if joined.height == 0:
-#             continue
-#         joined = joined.with_columns(pl.lit(unemp_year).alias("unemp_year"))
-#         records.append(joined)
+# # # For each target year >= 2017, plot mortality (target year) vs unemployment
+# # # from the three prior years (target_year-3, -2, -1), colored by unemployment year.
+# # for target_year in range(2017, max_year + 1):
+# #     records = []
+# #     for lag in (3, 2, 1):
+# #         unemp_year = target_year - lag
+# #         if unemp_year < min_year:
+# #             continue
 
-#     if not records:
-#         continue
+# #         un = mort_unemp.filter(pl.col("year") == unemp_year).select(["FIPS", "unemp_rate"])
+# #         mort = mort_unemp.filter(pl.col("year") == target_year).select(["FIPS", "mortality_rate"])
 
-#     plot_df = pl.concat(records).to_pandas()
-#     print(plot_df.head(10))
-#     sns.scatterplot(data=plot_df, x="unemp_rate", y="mortality_rate", hue="unemp_year", alpha=0.6)
-#     plt.title(f"Mortality vs prior-year unemployment — target year {target_year}")
-#     plt.xlabel("Unemployment rate (prior year)")
-#     plt.ylabel("Mortality rate")
-#     plt.show()
-### The above worked, but didn't offer a great insight. I'm going to plot something different now,
-### rather than plotting mortality vs unemployment directly, I'm going to demean the variables at the county
-### level, and plot that for each year.
+# #         joined = mort.join(un, on="FIPS", how="inner")
+# #         if joined.height == 0:
+# #             continue
+# #         joined = joined.with_columns(pl.lit(unemp_year).alias("unemp_year"))
+# #         records.append(joined)
 
-df = df.with_columns(
-    pl.col("mortality_rate").mean().over("FIPS").alias("mortality_rate_county_mean"),
-    pl.col("unemp_rate").mean().over("FIPS").alias("unemp_rate_county_mean")
-)
+# #     if not records:
+# #         continue
 
-df = df.with_columns(
-    (pl.col("mortality_rate") - pl.col("mortality_rate_county_mean")).alias("mortality_rate_demeaned"),
-    (pl.col("unemp_rate") - pl.col("unemp_rate_county_mean")).alias("unemp_rate_demeaned")
-)
+# #     plot_df = pl.concat(records).to_pandas()
+# #     print(plot_df.head(10))
+# #     sns.scatterplot(data=plot_df, x="unemp_rate", y="mortality_rate", hue="unemp_year", alpha=0.6)
+# #     plt.title(f"Mortality vs prior-year unemployment — target year {target_year}")
+# #     plt.xlabel("Unemployment rate (prior year)")
+# #     plt.ylabel("Mortality rate")
+# #     plt.show()
+# ### The above worked, but didn't offer a great insight. I'm going to plot something different now,
+# ### rather than plotting mortality vs unemployment directly, I'm going to demean the variables at the county
+# ### level, and plot that for each year.
 
-df = df.with_columns(
-    pl.col("mortality_rate_demeaned").shift(-1).over("FIPS").alias("mortality_rate_demeaned_lead")
-)
-
-# plot_df = df.drop_nulls(["unemp_rate_demeaned", "mortality_rate_demeaned_lead"]).to_pandas()
-
-# sns.scatterplot(
-#     data=plot_df,
-#     x="unemp_rate_demeaned",
-#     y="mortality_rate_demeaned_lead",
-#     alpha=0.4
+# df = df.with_columns(
+#     pl.col("mortality_rate").mean().over("FIPS").alias("mortality_rate_county_mean"),
+#     pl.col("unemp_rate").mean().over("FIPS").alias("unemp_rate_county_mean")
 # )
 
-# plt.axhline(0,color="black",linewidth=1)
-# plt.axvline(0,color="black",linewidth=1)
+# df = df.with_columns(
+#     (pl.col("mortality_rate") - pl.col("mortality_rate_county_mean")).alias("mortality_rate_demeaned"),
+#     (pl.col("unemp_rate") - pl.col("unemp_rate_county_mean")).alias("unemp_rate_demeaned")
+# )
 
-# plt.xlabel("Within-county unemployment deviation")
-# plt.ylabel("Within-county mortality deviation (t+1)")
-# plt.title("Within-county relationship (FE equivalent)")
-# plt.show()
+# df = df.with_columns(
+#     pl.col("mortality_rate_demeaned").shift(-1).over("FIPS").alias("mortality_rate_demeaned_lead")
+# )
+
+# # plot_df = df.drop_nulls(["unemp_rate_demeaned", "mortality_rate_demeaned_lead"]).to_pandas()
+
+# # sns.scatterplot(
+# #     data=plot_df,
+# #     x="unemp_rate_demeaned",
+# #     y="mortality_rate_demeaned_lead",
+# #     alpha=0.4
+# # )
+
+# # plt.axhline(0,color="black",linewidth=1)
+# # plt.axvline(0,color="black",linewidth=1)
+
+# # plt.xlabel("Within-county unemployment deviation")
+# # plt.ylabel("Within-county mortality deviation (t+1)")
+# # plt.title("Within-county relationship (FE equivalent)")
+# # plt.show()
 
 
-for lag in [0, 1, 2, 3]:
-    df = df.with_columns(
-        pl.col("unemp_rate_demeaned")
-        .shift(lag)
-        .over("FIPS")
-        .alias(f"unemp_rate_demeaned{lag}")
-    )
+# for lag in [0, 1, 2, 3]:
+#     df = df.with_columns(
+#         pl.col("unemp_rate_demeaned")
+#         .shift(lag)
+#         .over("FIPS")
+#         .alias(f"unemp_rate_demeaned{lag}")
+#     )
 
-    plotting_df = (
-        df.select(
-            f"unemp_rate_demeaned{lag}",
-            "mortality_rate_demeaned_lead"
-        )
-        .drop_nulls()
-        .to_pandas()
-    )
+#     plotting_df = (
+#         df.select(
+#             f"unemp_rate_demeaned{lag}",
+#             "mortality_rate_demeaned_lead"
+#         )
+#         .drop_nulls()
+#         .to_pandas()
+#     )
 
-    plt.figure(figsize=(8,6))
-    sns.regplot(
-        data=plotting_df,
-        x=f"unemp_rate_demeaned{lag}",
-        y="mortality_rate_demeaned_lead",
-        scatter_kws={"alpha":0.2},
-        line_kws={"color":"red"}
-    )
-    plt.title(f"Within-county Unemployment lag {lag+1} vs next-year Mortality deviation")#, Pre-Covid")
-    plt.xlabel(f"Demeaned unemployment, lag {lag+1}")
-    plt.ylabel("Demeaned mortality, lead 1")
-    plt.show()
+#     plt.figure(figsize=(8,6))
+#     sns.regplot(
+#         data=plotting_df,
+#         x=f"unemp_rate_demeaned{lag}",
+#         y="mortality_rate_demeaned_lead",
+#         scatter_kws={"alpha":0.2},
+#         line_kws={"color":"red"}
+#     )
+#     plt.title(f"Within-county Unemployment lag {lag+1} vs next-year Mortality deviation")#, Pre-Covid")
+#     plt.xlabel(f"Demeaned unemployment, lag {lag+1}")
+#     plt.ylabel("Demeaned mortality, lead 1")
+#     plt.show()
     
-### 3/9/26, EB: The above loop plots the county demeaned mortality rate at lead 1 (i.e., next year) against the county demeaned unemployment rate at lags 0, 1, 2, and 3.
-### Now I'm going to plot just plain mean mortality vs mean unemployment for each lag, to see if there's any obvious patterns there. This checks between counties,
-### now within like we did above.
-df_means = df.group_by("FIPS").agg(
-    unemp_mean = pl.col("unemp_rate").mean(),
-    mort_mean = pl.col("mortality_rate").mean()
-)
+# ### 3/9/26, EB: The above loop plots the county demeaned mortality rate at lead 1 (i.e., next year) against the county demeaned unemployment rate at lags 0, 1, 2, and 3.
+# ### Now I'm going to plot just plain mean mortality vs mean unemployment for each lag, to see if there's any obvious patterns there. This checks between counties,
+# ### now within like we did above.
+# df_means = df.group_by("FIPS").agg(
+#     unemp_mean = pl.col("unemp_rate").mean(),
+#     mort_mean = pl.col("mortality_rate").mean()
+# )
 
-plot_df = df_means.to_pandas()
-sns.regplot(
-    data=plot_df,
-    x="unemp_mean",
-    y="mort_mean",
-    scatter_kws={"alpha":0.5},
-    line_kws={"color":"red"}
-)
+# plot_df = df_means.to_pandas()
+# sns.regplot(
+#     data=plot_df,
+#     x="unemp_mean",
+#     y="mort_mean",
+#     scatter_kws={"alpha":0.5},
+#     line_kws={"color":"red"}
+# )
 
-plt.xlabel("Mean unemployment rate (county)")
-plt.ylabel("Mean mortality rate (county)")
-plt.title("Between-county relationship: unemployment vs mortality")#, Pre-Covid")
-plt.show()
-### As expected, the between-relationship is stronger, but also what we might expect: higher unemployment counties have higher mortality rates.
-### This suggests that our DLNM results aren't just picking up on some weird artifact of the data, but are likely picking up on a real relationship 
-### between unemployment and mortality that exists both within and between counties. This means that the story we have to tell about unemployment and mortality
-### is more complicated than the usual unemployment -> mortality story, and that the story is a matter of scale. A county's unemployment rate, relative to its own
-### long-run mean (i.e., the within-county relationship) has a different relationship to mortality than 
-
-
+# plt.xlabel("Mean unemployment rate (county)")
+# plt.ylabel("Mean mortality rate (county)")
+# plt.title("Between-county relationship: unemployment vs mortality")#, Pre-Covid")
+# plt.show()
+# ### As expected, the between-relationship is stronger, but also what we might expect: higher unemployment counties have higher mortality rates.
+# ### This suggests that our DLNM results aren't just picking up on some weird artifact of the data, but are likely picking up on a real relationship 
+# ### between unemployment and mortality that exists both within and between counties. This means that the story we have to tell about unemployment and mortality
+# ### is more complicated than the usual unemployment -> mortality story, and that the story is a matter of scale. A county's unemployment rate, relative to its own
+# ### long-run mean (i.e., the within-county relationship) has a different relationship to mortality than 
 
 
 
-### Ok the lag plots just above seem to show that the DLNM is picking up on legit behavior between unemployment and mortality, which is reassuring if strange.
-### What I'm going to do now is fit a linear fixed effects regression for each lag, and plot the coefficients as a function of lag.
-### This will help me understand the temporal pattern of the relationship between a variable and mortality.
 
 
-def plot_within_county_lags(
-    df,
-    var: str,
-    outcome: str = "mortality_rate",
-    lags=(0, 1, 2, 3),
-    county_col: str = "FIPS",
-    lead: int = 1,
-    figsize=(8, 6),
-):
-    # compute county means and demean the variable and outcome
-    df = df.with_columns(
-        pl.col(outcome).mean().over(county_col).alias(f"{outcome}_county_mean"),
-        pl.col(var).mean().over(county_col).alias(f"{var}_county_mean"),
-    )
-
-    df = df.with_columns(
-        (pl.col(outcome) - pl.col(f"{outcome}_county_mean")).alias(f"{outcome}_demeaned"),
-        (pl.col(var) - pl.col(f"{var}_county_mean")).alias(f"{var}_demeaned"),
-    )
-
-    # create lead for outcome
-    df = df.with_columns(
-        pl.col(f"{outcome}_demeaned").shift(-lead).over(county_col).alias(f"{outcome}_demeaned_lead")
-    )
-
-    for lag in lags:
-        df = df.with_columns(
-            pl.col(f"{var}_demeaned").shift(lag).over(county_col).alias(f"{var}_demeaned{lag}")
-        )
-
-        plotting_df = (
-            df.select(
-                f"{var}_demeaned{lag}",
-                f"{outcome}_demeaned_lead",
-            )
-            .drop_nulls()
-            .to_pandas()
-        )
-
-        plt.figure(figsize=figsize)
-        sns.regplot(
-            data=plotting_df,
-            x=f"{var}_demeaned{lag}",
-            y=f"{outcome}_demeaned_lead",
-            scatter_kws={"alpha": 0.2},
-            line_kws={"color": "red"},
-        )
-        plt.title(f"Within-county {var} lag {lag+1} vs next-year {outcome} deviation")
-        plt.xlabel(f"Demeaned {var}, lag {lag+1}")
-        plt.ylabel(f"Demeaned {outcome}, lead {lead}")
-        plt.show()
+# ### Ok the lag plots just above seem to show that the DLNM is picking up on legit behavior between unemployment and mortality, which is reassuring if strange.
+# ### What I'm going to do now is fit a linear fixed effects regression for each lag, and plot the coefficients as a function of lag.
+# ### This will help me understand the temporal pattern of the relationship between a variable and mortality.
 
 
-# Call the helper for unemployment rate
-# plot_within_county_lags(df, "unemp_rate")
-plot_within_county_lags(df, "rx_rate")
-plot_within_county_lags(df, "uninsured_rate")
+# def plot_within_county_lags(
+#     df,
+#     var: str,
+#     outcome: str = "mortality_rate",
+#     lags=(0, 1, 2, 3),
+#     county_col: str = "FIPS",
+#     lead: int = 1,
+#     figsize=(8, 6),
+# ):
+#     # compute county means and demean the variable and outcome
+#     df = df.with_columns(
+#         pl.col(outcome).mean().over(county_col).alias(f"{outcome}_county_mean"),
+#         pl.col(var).mean().over(county_col).alias(f"{var}_county_mean"),
+#     )
+
+#     df = df.with_columns(
+#         (pl.col(outcome) - pl.col(f"{outcome}_county_mean")).alias(f"{outcome}_demeaned"),
+#         (pl.col(var) - pl.col(f"{var}_county_mean")).alias(f"{var}_demeaned"),
+#     )
+
+#     # create lead for outcome
+#     df = df.with_columns(
+#         pl.col(f"{outcome}_demeaned").shift(-lead).over(county_col).alias(f"{outcome}_demeaned_lead")
+#     )
+
+#     for lag in lags:
+#         df = df.with_columns(
+#             pl.col(f"{var}_demeaned").shift(lag).over(county_col).alias(f"{var}_demeaned{lag}")
+#         )
+
+#         plotting_df = (
+#             df.select(
+#                 f"{var}_demeaned{lag}",
+#                 f"{outcome}_demeaned_lead",
+#             )
+#             .drop_nulls()
+#             .to_pandas()
+#         )
+
+#         plt.figure(figsize=figsize)
+#         sns.regplot(
+#             data=plotting_df,
+#             x=f"{var}_demeaned{lag}",
+#             y=f"{outcome}_demeaned_lead",
+#             scatter_kws={"alpha": 0.2},
+#             line_kws={"color": "red"},
+#         )
+#         plt.title(f"Within-county {var} lag {lag+1} vs next-year {outcome} deviation")
+#         plt.xlabel(f"Demeaned {var}, lag {lag+1}")
+#         plt.ylabel(f"Demeaned {outcome}, lead {lead}")
+#         plt.show()
+
+
+# # Call the helper for unemployment rate
+# # plot_within_county_lags(df, "unemp_rate")
+# plot_within_county_lags(df, "rx_rate")
+# plot_within_county_lags(df, "uninsured_rate")
 
 
 
 #--------------------------------------------------------------------------------------------------------------------------------------------
 ### Trying to fit a simple distributed lag regression model, to more adequately justify my use of DLNM to model the relationship
 ### between unemployment and mortality.
+
+
+
+
+
+
+
+### Making a few plots for the dissertation
+
+import src.visualizations as viz
+import src.metrics as metrics
+import src.data_processing as data_proc
+import polars as pl
+import matplotlib.pyplot as plt
+from pathlib import Path
+import os
+
+data = data_proc.CountyDataLoader()
+df = data.load()
+
+mortality_rates = df.select(
+    pl.col("FIPS", "mortality_rate"),
+    pl.col("year").alias("Year")
+).to_pandas()
+
+counts = (mortality_rates[mortality_rates['Year'].isin([2014,2022])]
+          .groupby('Year')['mortality_rate']
+          .apply(lambda s: (s==0).sum()))
+print(counts)
+
+medians = (mortality_rates[mortality_rates['Year'].isin([2014, 2022])]
+           .groupby('Year')['mortality_rate']
+           .median())
+print(medians)
+
+# rx_rates = df.select(
+#     pl.col("FIPS", "rx_rate"),
+#     pl.col("year").alias("Year")
+#     ).with_columns(
+#         pl.col("rx_rate").replace(-9,0)
+#         ).to_pandas()
+
+# viz.plot_county_metric_maps(mortality_rates, "mortality_rate", cmap="RdYlGn_r", save_dir="general_plots", title_prefix="County-Level")
+
+# plt.figure()
+# plt.hist(mortality_rates["mortality_rate"], bins=100, color="skyblue", edgecolor="black")
+# plt.xlabel("Mortality Rate")
+# plt.ylabel("Frequency")
+# plt.title("Distribution of County-Level Mortality Rates, All Years")
+# plt.show()
+# plt.savefig("general_plots/mortality_rate_distribution_hist_allyears.png", dpi=300, bbox_inches="tight")
+
+###
+# max_mort = mortality_rates["mortality_rate"].max()
+# save_dir = Path("general_plots/mort_rates")
+# save_dir.mkdir(exist_ok=True)
+# # max_rx = rx_rates["rx_rate"].max()
+# # save_dir = Path("general_plots/mort_rates")
+# # save_dir.mkdir(exist_ok=True)
+
+# for year in sorted(mortality_rates["Year"].unique()):
+#     # plt.figure()
+#     plt.hist(mortality_rates[mortality_rates["Year"] == year]["mortality_rate"], bins=50, color="skyblue", edgecolor="black")
+#     plt.xlim(-5, max_mort * 1.1)  # set x-axis limit to a bit above the max mortality rate for better visualization
+#     plt.xlabel("Mortality Rate")
+#     plt.ylabel("Frequency")
+#     plt.title(f"Distribution of County-Level Mortality Rates, {year}")
+#     # plt.show()
+#     plt.savefig(save_dir / f"mortality_rate_distribution_hist_{year}.png", dpi=300, bbox_inches="tight")
+#     plt.close()
+
+
+
+
+
+import geopandas as gpd
+import pandas as pd
+import matplotlib.pyplot as plt
+
+
+def top_5_risk_map(risk_scores: pd.DataFrame, risk_metric: str, model_name: str, save_dir: str):
+    # -- inputs --
+    shp_path = "data/Processed/2022_County_Shapefile/2022_filtered_shapefile.shp"
+    # assume `xgb_risk_scores` is a pandas DataFrame in scope with columns Year, AbsError_Risk and a county FIPS/GEOID column
+
+    # 1) filter 2022 and compute 95th percentile threshold
+    df2022 = risk_scores[risk_scores["Year"] == 2022].copy()
+
+    # 2) read shapefile
+    gdf = gpd.read_file(shp_path)
+
+    # 3) normalize to string zero-padded 5 (or 7 for state+county if needed)
+    gdf["FIPS"] = gdf["GEOID"].astype(str).str.zfill(5)
+    df2022["FIPS"] = df2022["FIPS"].astype(str).str.zfill(5)
+
+    # 4) exclude Alaska, Hawaii, Puerto Rico by state FIPS prefixes
+    exclude_prefixes = ("02", "15", "72")
+    df2022 = df2022[~df2022["FIPS"].str.startswith(exclude_prefixes)].copy()
+    gdf = gdf[~gdf["FIPS"].str.startswith(exclude_prefixes)].copy()
+
+    threshold = df2022[risk_metric].quantile(0.95)
+    top5_df = df2022[df2022[risk_metric] >= threshold].copy()
+
+    # 4) merge (left join so all counties present; top5 will have risk values, others NaN)
+    merged = gdf.merge(top5_df[["FIPS", risk_metric]], left_on="FIPS", right_on="FIPS", how="left")
+    df2022["is_top5"] = df2022[risk_metric] >= threshold
+
+    # 6) merge (keep all counties from shapefile)
+    merged = gdf.merge(df2022[['FIPS', risk_metric, "is_top5"]],
+                    left_on="FIPS", right_on="FIPS", how="left")
+    merged["is_top5"] = merged["is_top5"].fillna(False)
+    # dissolve counties into states
+    state_gdf = gdf.dissolve(by='STATEFP')
+
+    # 7) plot: grey background, red scale for top 5%
+    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+    merged[~merged["is_top5"]].plot(ax=ax, color="lightgrey", linewidth=0.1)
+    top5 = merged[merged["is_top5"]].copy()
+    if not top5.empty:
+        vmin = top5[risk_metric].min()
+        vmax = top5[risk_metric].max()
+        top5.plot(ax=ax, column=risk_metric, cmap="Reds", linewidth=0.2,
+                edgecolor="white", vmin=vmin, vmax=vmax, legend=True)
+    # draw thin black state outlines on top
+    state_gdf.boundary.plot(ax=ax, edgecolor="black", linewidth=0.4, zorder=5)
+
+    if model_name.lower() == "xgboost":
+        title_model_name = "XGBoost"
+    elif model_name.lower() == "random_forest":
+        title_model_name = "Random Forest"
+    else:
+        title_model_name = "MLP"
+    
+    if risk_metric == "SqError_Risk":
+        risk_metric_name = "Squared Error Risk"
+    elif risk_metric == "AbsError_Risk":
+        risk_metric_name = "Absolute Error Risk"
+
+    ax.set_axis_off()
+    ax.set_title(f"Top 5% Risk Counties (2022) — {title_model_name}, {risk_metric_name}")
+    plt.tight_layout()
+    # save if desired:
+    fig.savefig(f"{save_dir}/{model_name}_top5percent_{risk_metric}_2022_map.png", dpi=300, bbox_inches="tight")
+    # plt.show()
+    plt.close()
+
+
+xgb_risk_scores = pd.read_csv("model_outputs/xgbregressor/2026-03-04_14-15-39/risk_scores.csv")
+rf_risk_scores = pd.read_csv("model_outputs/randomforestregressor/2026-03-29_20-54-53/risk_scores.csv")
+mlp_risk_scores = pd.read_csv("model_outputs/mlpregressor/2026-03-29_16-39-39/risk_scores.csv")
+save_dir = "general_plots/maps/xgb_risk"
+
+viz.plot_county_metric_maps(xgb_risk_scores, value_col="AbsError_Risk", cmap="Reds", save_dir=save_dir, title_prefix="XGBoost Risk Map")
+
+
+# risk_scores = [xgb_risk_scores, rf_risk_scores, mlp_risk_scores]
+# model_names = ["XGBoost", "Random Forest", "MLP"]
+# risk_metrics = ["AbsError_Risk", "SqError_Risk"]
+
+# for risk_scores, model_name in zip(risk_scores, model_names):
+#     for risk_metric in risk_metrics:
+#         top_5_risk_map(risk_scores, risk_metric=risk_metric, model_name=model_name, save_dir=save_dir)
+
+
+# top_5_risk_map(xgb_risk_scores, risk_metric="AbsError_Risk", model_name="XGBoost", save_dir=save_dir)
+# top_5_risk_map(rf_risk_scores, risk_metric="AbsError_Risk", model_name="Random_Forest", save_dir=save_dir)
+# top_5_risk_map(mlp_risk_scores, risk_metric="AbsError_Risk", model_name="MLP", save_dir=save_dir)
+
+# top_5_risk_map(xgb_risk_scores, risk_metric="SqError_Risk", model_name="XGBoost", save_dir=save_dir)
+# top_5_risk_map(rf_risk_scores, risk_metric="SqError_Risk", model_name="Random_Forest", save_dir=save_dir)
+# top_5_risk_map(mlp_risk_scores, risk_metric="SqError_Risk", model_name="MLP", save_dir=save_dir)

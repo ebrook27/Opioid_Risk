@@ -1897,3 +1897,12 @@ def plot_single_scenario_cohort_change_lookup_table(
     
     fig.tight_layout(rect=(0.0, 0.0, 0.80, 1.0))
     plt.show()
+
+
+
+### -------------------------------------------------------------------------------------------------------------
+### ------------------------------ G-Computation Functions ------------------------------------------------------
+### -------------------------------------------------------------------------------------------------------------
+
+### 3/15/26, EB: After reading through Clarke & Polselli (2026), I think using DML techniques is kind of doomed for problem
+### setting.
